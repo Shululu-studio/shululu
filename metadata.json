@@ -1,0 +1,6 @@
+{
+  "name": "Shululu Lyrics",
+  "description": "Professional lyrics video editor with automatic audio synchronization, kinetic typography, interactive timeline editing, and browser-based video export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

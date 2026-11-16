@@ -1,0 +1,408 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+@layer base {
+  :root {
+    --font-ui: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-display: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+    --bg-chassis: #121922;
+    --bg-panel: #19232E;
+    --bg-inset: #0C1117;
+    --border-panel: #273545;
+    --accent-active: #B91C1C;
+    --accent-active-bright: #EF4444;
+    --accent-playhead: #F2C230;
+    --track-video: #0891B2;
+    --track-audio: #24C4B4;
+    --accent-warning: #E05252;
+    --text-primary: #EEF3F8;
+    --text-muted: #8696A8;
+  }
+
+  html,
+  body,
+  #root,
+  button,
+  input,
+  textarea,
+  select {
+    font-family: var(--font-ui);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: #121922;
+    color: #EEF3F8;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Premiere Pro Black Console Button */
+.v-btn {
+  background: linear-gradient(180deg, #232327 0%, #17171A 55%, #111114 100%);
+  border: 1px solid #35353B;
+  border-bottom-color: #09090B;
+  color: #E4E4E7;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.65),
+    0 2px 4px rgba(0, 0, 0, 0.6);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 80ms ease,
+    box-shadow 120ms ease;
+}
+
+.v-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #2C2C32 0%, #1F1F24 55%, #17171B 100%);
+  border-color: #52525B;
+  border-bottom-color: #09090B;
+  color: #FFFFFF;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.65),
+    0 3px 6px rgba(0, 0, 0, 0.7);
+}
+
+.v-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  background: linear-gradient(180deg, #0E0E10 0%, #161619 100%);
+  border-color: #27272A;
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.85),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.v-btn:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Premiere Pro 3D Round Machined Black Micro-Knob */
+.v-btn-knob {
+  border-radius: 9999px;
+  background: radial-gradient(circle at 35% 26%, #333339 0%, #1A1A1E 54%, #0B0B0D 100%);
+  border: 1px solid #3F3F46;
+  border-bottom-color: #070709;
+  color: #E4E4E7;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.18),
+    inset 0 -2px 2px rgba(0, 0, 0, 0.78),
+    0 2px 5px rgba(0, 0, 0, 0.75);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 80ms ease,
+    box-shadow 120ms ease;
+}
+
+.v-btn-knob:hover:not(:disabled) {
+  border-color: #71717A;
+  color: #FFFFFF;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.25),
+    inset 0 -2px 2px rgba(0, 0, 0, 0.78),
+    0 3px 7px rgba(0, 0, 0, 0.82);
+}
+
+.v-btn-knob:active:not(:disabled) {
+  transform: translateY(1px);
+  background: radial-gradient(circle at 50% 60%, #0D0D10 0%, #18181B 100%);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+.v-btn-knob:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Premiere Pro Primary / Active Black Console Key */
+.v-btn-cobalt,
+.v-btn-yellow,
+.v-btn-teal,
+.v-btn-amber {
+  background: linear-gradient(180deg, #1E1E22 0%, #121215 55%, #0B0B0D 100%);
+  border: 1px solid #A1A1AA;
+  border-bottom-color: #52525B;
+  color: #FFFFFF;
+  font-weight: 600;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.85),
+    0 2px 6px rgba(0, 0, 0, 0.75);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 80ms ease,
+    box-shadow 120ms ease;
+}
+
+.v-btn-cobalt:hover:not(:disabled),
+.v-btn-yellow:hover:not(:disabled),
+.v-btn-teal:hover:not(:disabled),
+.v-btn-amber:hover:not(:disabled) {
+  background: linear-gradient(180deg, #27272C 0%, #18181C 55%, #101013 100%);
+  border-color: #E4E4E7;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.85),
+    0 3px 8px rgba(0, 0, 0, 0.8);
+}
+
+.v-btn-cobalt:active:not(:disabled),
+.v-btn-yellow:active:not(:disabled),
+.v-btn-teal:active:not(:disabled),
+.v-btn-amber:active:not(:disabled) {
+  transform: translateY(1px);
+  background: linear-gradient(180deg, #09090B 0%, #141417 100%);
+  box-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.9);
+}
+
+.v-btn-cobalt:disabled,
+.v-btn-yellow:disabled,
+.v-btn-teal:disabled,
+.v-btn-amber:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.v-btn-amber-idle {
+  background: linear-gradient(180deg, #1E1E22 0%, #141417 55%, #0E0E10 100%);
+  border: 1px solid #35353B;
+  border-bottom-color: #09090B;
+  color: #D4D4D8;
+  font-weight: 600;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.7),
+    0 2px 4px rgba(0, 0, 0, 0.65);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 80ms ease,
+    box-shadow 120ms ease;
+}
+
+.v-btn-amber-idle:hover:not(:disabled) {
+  background: linear-gradient(180deg, #27272C 0%, #1C1C20 55%, #141417 100%);
+  border-color: #52525B;
+  color: #FFFFFF;
+}
+
+.v-btn-amber-idle:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.85);
+}
+
+.v-btn-amber-idle:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* 3D Recessed & Raised Studio Rack Module Surfaces */
+.v-panel {
+  background: linear-gradient(180deg, #18222E 0%, #131B24 100%);
+  border: 1px solid #2A394A;
+  border-top-color: #36495E;
+  border-bottom-color: #0D131A;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+.v-inset {
+  background: linear-gradient(180deg, #090D12 0%, #0D131A 100%);
+  border: 1px solid #243140;
+  border-top-color: #06090D;
+  border-bottom-color: #2E3E51;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.82),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* 3D Etched Hardware Groove Line */
+.v-line-3d {
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(180deg, #070B10 0%, #070B10 50%, rgba(255, 255, 255, 0.08) 51%, rgba(255, 255, 255, 0.08) 100%);
+}
+
+/* Status LED indicator */
+.v-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background-color: #2B3949;
+  border: 1px solid #0C1117;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.v-led-active {
+  background-color: #22D3EE;
+  border-color: #67E8F9;
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+}
+
+/* Custom studio scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0C1117;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #273545;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3A4E63;
+}
+
+/* 3D Virtual Studio DAW Fader Track ("Line") & Sculpted Fader Cap */
+input[type='range'].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 22px;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range'].studio-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    180deg,
+    #05070A 0%,
+    #0C1219 42%,
+    #1F2A36 50%,
+    #0D141C 58%,
+    #1B2531 100%
+  );
+  border: 1px solid #263342;
+  border-top-color: #06090D;
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.92),
+    0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+input[type='range'].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 4px;
+  background: linear-gradient(
+    180deg,
+    #6B7C90 0%,
+    #3E4B5B 20%,
+    #252E39 45%,
+    #D4D4D8 47%,
+    #FFFFFF 50%,
+    #D4D4D8 53%,
+    #1C242D 55%,
+    #2B3644 82%,
+    #121820 100%
+  );
+  border: 1px solid #090D12;
+  border-top-color: #8496AB;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.75),
+    0 3px 6px rgba(0, 0, 0, 0.82);
+  cursor: grab;
+  transition: filter 120ms ease, box-shadow 120ms ease;
+}
+
+input[type='range'].studio-slider::-webkit-slider-thumb:hover {
+  filter: brightness(1.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.75),
+    0 3px 7px rgba(0, 0, 0, 0.85),
+    0 0 6px rgba(255, 255, 255, 0.25);
+}
+
+input[type='range'].studio-slider:active::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+
+input[type='range'].studio-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    180deg,
+    #05070A 0%,
+    #0C1219 42%,
+    #1F2A36 50%,
+    #0D141C 58%,
+    #1B2531 100%
+  );
+  border: 1px solid #263342;
+  border-top-color: #06090D;
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.92),
+    0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+input[type='range'].studio-slider::-moz-range-thumb {
+  width: 15px;
+  height: 20px;
+  border-radius: 4px;
+  background: linear-gradient(
+    180deg,
+    #6B7C90 0%,
+    #3E4B5B 20%,
+    #252E39 45%,
+    #D4D4D8 47%,
+    #FFFFFF 50%,
+    #D4D4D8 53%,
+    #1C242D 55%,
+    #2B3644 82%,
+    #121820 100%
+  );
+  border: 1px solid #090D12;
+  border-top-color: #8496AB;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.75),
+    0 3px 6px rgba(0, 0, 0, 0.82);
+  cursor: grab;
+}
+
+
