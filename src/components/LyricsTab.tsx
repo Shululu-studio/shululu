@@ -7,6 +7,8 @@ import {
   ClipboardPaste,
   Edit3,
   FileText,
+  FolderOpen,
+  Globe,
   Loader2,
   Plus,
   SlidersHorizontal,
@@ -94,6 +96,38 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
   const [bulkDraft, setBulkDraft] = useState('');
   const [expandedWordsLineId, setExpandedWordsLineId] = useState<string | null>(null);
 
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+  const [urlInputMode, setUrlInputMode] = useState(false);
+  const [mediaUrl, setMediaUrl] = useState('');
+  const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+
+  const handleLoadFromUrl = async () => {
+    if (!mediaUrl.trim()) return;
+    try {
+      setIsLoadingUrl(true);
+      setUrlError(null);
+      const res = await fetch(mediaUrl.trim());
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const blob = await res.blob();
+      const filename = mediaUrl.trim().split('/').pop()?.split('?')[0] || 'imported_audio.mp3';
+      const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
+      if (audioFileName) {
+        setBulkEditOpen(false);
+        setBulkDraft('');
+        setExpandedWordsLineId(null);
+      }
+      onUploadAudio(file);
+      setSourcePickerOpen(false);
+      setUrlInputMode(false);
+      setMediaUrl('');
+    } catch (err: any) {
+      setUrlError(err?.message || 'Failed to fetch audio from URL (check CORS permissions or direct link validity).');
+    } finally {
+      setIsLoadingUrl(false);
+    }
+  };
+
   const pasteOpen = pasteDrawerOpen ?? localPasteOpen;
   const setPasteOpen = (open: boolean) => {
     setLocalPasteOpen(open);
@@ -177,13 +211,98 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
 
           <button
             type="button"
-            onClick={() => audioInputRef.current?.click()}
+            onClick={() => setSourcePickerOpen(true)}
             className="v-btn w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5 text-[#D4D4D8]" aria-hidden="true" />
             <span>{audioFileName ? 'Replace Audio' : 'Load Audio'}</span>
           </button>
         </div>
+
+        {sourcePickerOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+            <div className="v-panel p-4 w-full max-w-sm space-y-3 bg-[#121922] border-[#273545] shadow-2xl">
+              <div className="flex items-center justify-between border-b border-[#273545] pb-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-[#EEF3F8]">
+                  Select Audio Source
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSourcePickerOpen(false);
+                    setUrlInputMode(false);
+                    setUrlError(null);
+                  }}
+                  className="text-[#8696A8] hover:text-[#EEF3F8] text-xs font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {!urlInputMode ? (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSourcePickerOpen(false);
+                      audioInputRef.current?.click();
+                    }}
+                    className="v-btn w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-semibold uppercase tracking-wider cursor-pointer"
+                  >
+                    <FolderOpen className="w-4 h-4 text-[#22D3EE]" aria-hidden="true" />
+                    <span>Upload from Device (File)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setUrlInputMode(true)}
+                    className="v-btn w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-semibold uppercase tracking-wider cursor-pointer"
+                  >
+                    <Globe className="w-4 h-4 text-[#22D3EE]" aria-hidden="true" />
+                    <span>Import via Audio / Video Link</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <label htmlFor="media-url-input" className="block text-[11px] font-medium text-[#8696A8]">
+                    Paste direct audio or video file URL (MP3, WAV, AAC, MP4)
+                  </label>
+                  <input
+                    id="media-url-input"
+                    type="url"
+                    value={mediaUrl}
+                    onChange={(e) => setMediaUrl(e.target.value)}
+                    placeholder="https://example.com/song.mp3"
+                    className="v-inset w-full p-2 text-xs text-[#EEF3F8] placeholder:text-[#8696A8] focus:outline-none focus:border-[#22D3EE]"
+                  />
+                  {urlError && (
+                    <p className="text-[11px] text-[#E05252]" role="alert">
+                      {urlError}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setUrlInputMode(false)}
+                      className="v-btn px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider cursor-pointer"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleLoadFromUrl}
+                      disabled={isLoadingUrl || !mediaUrl.trim()}
+                      className="v-btn-teal px-3 py-1 text-[11px] font-semibold uppercase tracking-wider cursor-pointer flex items-center gap-1.5"
+                    >
+                      {isLoadingUrl && <Loader2 className="w-3 h-3 animate-spin shrink-0" aria-hidden="true" />}
+                      <span>Load URL</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Group 2: Lyrics Input & Sync Tools */}
         <div className="v-panel p-2 space-y-1.5">
