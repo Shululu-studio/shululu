@@ -103,14 +103,19 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
   const [urlError, setUrlError] = useState<string | null>(null);
 
   const handleLoadFromUrl = async () => {
-    if (!mediaUrl.trim()) return;
+    const trimmed = mediaUrl.trim();
+    if (!trimmed) return;
+    if (trimmed.includes('youtube.com') || trimmed.includes('youtu.be')) {
+      setUrlError('YouTube web links cannot be loaded directly because YouTube blocks direct browser fetches (CORS). Please use a direct MP3/WAV file link or upload the audio file from your device.');
+      return;
+    }
     try {
       setIsLoadingUrl(true);
       setUrlError(null);
-      const res = await fetch(mediaUrl.trim());
+      const res = await fetch(trimmed);
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const blob = await res.blob();
-      const filename = mediaUrl.trim().split('/').pop()?.split('?')[0] || 'imported_audio.mp3';
+      const filename = trimmed.split('/').pop()?.split('?')[0] || 'imported_audio.mp3';
       const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
       if (audioFileName) {
         setBulkEditOpen(false);

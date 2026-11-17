@@ -10,7 +10,7 @@ import {
 export interface FontOption {
   family: string;
   label: string;
-  category: 'Gospel & Worship' | 'Contemporary' | 'Editorial' | 'Stage & Bold';
+  category: 'Gospel & Worship' | 'Contemporary' | 'Editorial' | 'Stage & Bold' | 'Script' | 'Cinematic';
   weights: number[];
 }
 
@@ -128,6 +128,30 @@ export const CURATED_FONTS: FontOption[] = [
     label: 'Archivo',
     category: 'Stage & Bold',
     weights: [500, 600, 700],
+  },
+  {
+    family: 'Great Vibes',
+    label: 'Great Vibes (Script)',
+    category: 'Script',
+    weights: [400],
+  },
+  {
+    family: 'Cinzel Decorative',
+    label: 'Cinzel Decorative',
+    category: 'Cinematic',
+    weights: [700],
+  },
+  {
+    family: 'Cormorant Infant',
+    label: 'Cormorant Infant',
+    category: 'Editorial',
+    weights: [600],
+  },
+  {
+    family: 'Zilla Slab',
+    label: 'Zilla Slab',
+    category: 'Editorial',
+    weights: [600],
   },
 ];
 
@@ -519,6 +543,9 @@ export const EFFECT_OPTIONS: Array<{
   { value: 'shimmer-gold', label: 'Gold Foil Shimmer', description: 'Specular metallic light sweep across text' },
   { value: 'elastic-pop', label: 'Elastic Pop Spring', description: 'Bouncy spring settlement entrance' },
   { value: 'horizontal-slide', label: 'Horizontal Slide', description: 'Smooth horizontal slide entrance' },
+  { value: 'glitch-flash', label: 'Glitch Flash', description: 'Cyberpunk kinetic distortion entrance' },
+  { value: 'retro-pixel', label: 'Retro Typewriter', description: 'Classic staggered typing effect' },
+  { value: 'radial-burst', label: 'Radial Burst', description: 'Expanding burst scale settlement' },
 ];
 
 export const AUTO_EFFECT_STYLE_OPTIONS: Array<{

@@ -124,13 +124,21 @@ export function getActiveLyricsAtTime(
         offsetX = (1 - slideT) * -40;
       } else if (line.effect === 'gentle-zoom') {
         scale = 0.96 + progress * 0.08;
-      } else if (line.effect === 'cinematic' || line.effect === 'neon-glow' || line.effect === 'shimmer-gold' || line.effect === 'elastic-pop') {
+      } else if (line.effect === 'cinematic' || line.effect === 'neon-glow' || line.effect === 'shimmer-gold' || line.effect === 'elastic-pop' || line.effect === 'retro-pixel') {
         const cinWindow = entranceDur + delayBefore;
         const cinT = elapsedSincePre < cinWindow ? easingFn(elapsedSincePre / Math.max(0.01, cinWindow)) : 1;
         letterSpacingDelta = (1 - cinT) * 4;
         scale = 1.02 - cinT * 0.02;
       } else if (line.effect === 'subtle-drift') {
         offsetY = Math.sin(progress * Math.PI) * -12;
+      } else if (line.effect === 'glitch-flash') {
+        const glitchT = progress < 0.15 ? Math.sin(progress * 40) * 5 : 0;
+        offsetX = glitchT;
+        scale = 1 + (progress < 0.15 ? 0.06 : 0);
+      } else if (line.effect === 'radial-burst') {
+        const burstWindow = entranceDur + delayBefore;
+        const burstT = elapsedSincePre < burstWindow ? easingFn(elapsedSincePre / Math.max(0.01, burstWindow)) : 1;
+        scale = 0.7 + burstT * 0.3;
       }
     }
 

@@ -1478,3 +1478,22 @@ export function encodeFloat32ToWavBlob(
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+export function generateDemoAudioWavBlob(durationSec = 30, sampleRate = 44100): Blob {
+  const numSamples = Math.floor(durationSec * sampleRate);
+  const floatData = new Float32Array(numSamples);
+  const bpm = 120;
+  const beatInterval = sampleRate * (60 / bpm);
+  
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const beatPhase = (i % beatInterval) / beatInterval;
+    const kick = Math.sin(t * 2 * Math.PI * 80) * Math.exp(-beatPhase * 8) * (i % (beatInterval * 2) < beatInterval ? 0.8 : 0.4);
+    const chordFreq = Math.floor(t / 4) % 2 === 0 ? 220 : 261.63;
+    const synth = Math.sin(t * 2 * Math.PI * chordFreq) * 0.15 + Math.sin(t * 2 * Math.PI * chordFreq * 1.5) * 0.1;
+    const env = Math.min(1, t / 0.5) * Math.min(1, (durationSec - t) / 0.5);
+    floatData[i] = (kick + synth) * env;
+  }
+  return encodeFloat32ToWavBlob(floatData, sampleRate);
+}
+
+

@@ -22,7 +22,10 @@ export type EffectType =
   | 'neon-glow'
   | 'shimmer-gold'
   | 'elastic-pop'
-  | 'horizontal-slide';
+  | 'horizontal-slide'
+  | 'glitch-flash'
+  | 'retro-pixel'
+  | 'radial-burst';
 
 export type AutoEffectStyle =
   | 'worship-serene'
