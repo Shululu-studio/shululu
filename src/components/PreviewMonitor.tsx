@@ -138,6 +138,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     hasDomBgVideo,
     hasAudio,
     waveformPeaks,
+    isPlaying,
   });
   latestRenderRef.current = {
     project,
@@ -146,6 +147,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     hasDomBgVideo,
     hasAudio,
     waveformPeaks,
+    isPlaying,
   };
   const lastPaintedRef = useRef<{
     time: number;
@@ -157,7 +159,9 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     waveformPeaks?: number[];
   } | null>(null);
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+  const [isExpandedPreview, setIsExpandedPreview] = useState(false);
+  const isFullscreen = isNativeFullscreen || isExpandedPreview;
   const [isDraggingText, setIsDraggingText] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(project.name);
@@ -167,12 +171,55 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
   }, [project.name]);
 
   useEffect(() => {
+    const getFsElement = () =>
+      document.fullscreenElement ||
+      (document as unknown as { webkitFullscreenElement?: Element | null })
+        .webkitFullscreenElement ||
+      null;
     const onFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      const active = Boolean(getFsElement());
+      setIsNativeFullscreen(active);
+    };
+    const onFsError = () => {
+      setIsNativeFullscreen(false);
     };
     document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    document.addEventListener('fullscreenerror', onFsError);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+      document.removeEventListener('fullscreenerror', onFsError);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!isExpandedPreview && !isNativeFullscreen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsExpandedPreview(false);
+        setIsNativeFullscreen(false);
+        const doc = document as unknown as {
+          fullscreenElement?: Element | null;
+          webkitFullscreenElement?: Element | null;
+          exitFullscreen?: () => Promise<void>;
+          webkitExitFullscreen?: () => Promise<void> | void;
+        };
+        const fsEl = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+        try {
+          if (fsEl && doc.exitFullscreen) {
+            void doc.exitFullscreen().catch(() => {});
+          } else if (fsEl && doc.webkitExitFullscreen) {
+            void Promise.resolve(doc.webkitExitFullscreen()).catch(() => {});
+          }
+        } catch {
+          // Ignore fullscreen exit errors
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isExpandedPreview, isNativeFullscreen]);
 
   // Synchronize native composited background <video> playback & scrubs with zero canvas pixel copy
   useEffect(() => {
@@ -205,7 +252,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     }
   }, [currentTime, isPlaying, activeVideoUrl]);
 
-  const paintCanvasFrame = useCallback((liveTime: number) => {
+  const paintCanvasFrame = useCallback((liveTime: number, watermarkTimeOverride?: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const {
@@ -215,6 +262,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
       hasDomBgVideo: useTransparentBg,
       hasAudio: latestHasAudio,
       waveformPeaks: latestWaveformPeaks,
+      isPlaying: latestIsPlaying,
     } = latestRenderRef.current;
 
     const targetW =
@@ -245,10 +293,18 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const resolvedWatermarkTime =
+      watermarkTimeOverride ?? (latestIsPlaying ? liveTime : performance.now() / 1000);
+
     renderVideoFrame(ctx, targetW, targetH, liveTime, latestProject, latestMediaCache, {
       transparentVideoBg: useTransparentBg,
       hasAudio: latestHasAudio,
       waveformPeaks: latestWaveformPeaks,
+      watermarkTime: resolvedWatermarkTime,
+      reducedMotion,
     });
     lastPaintedRef.current = {
       time: liveTime,
@@ -260,6 +316,49 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
       waveformPeaks: latestWaveformPeaks,
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.fonts) return;
+    let active = true;
+    const lyricFamily = project.typography.fontFamily;
+    const lyricWeight = project.typography.fontWeight;
+    const secondaryWeight = lyricWeight >= 600 ? 500 : lyricWeight;
+    const watermarkFamily = project.watermark?.fontFamily || 'Caveat';
+    void Promise.all([
+      document.fonts.load('700 48px "Caveat"'),
+      document.fonts.load(`700 48px "${watermarkFamily}"`),
+      document.fonts.load(`${lyricWeight} 48px "${lyricFamily}"`),
+      document.fonts.load(`italic ${secondaryWeight} 36px "${lyricFamily}"`),
+      document.fonts.load(`${secondaryWeight} 36px "${lyricFamily}"`),
+    ])
+      .then(() => {
+        if (active) paintCanvasFrame(currentTimeRef.current);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [paintCanvasFrame, project.typography.fontFamily, project.typography.fontWeight, project.watermark?.fontFamily]);
+
+  useEffect(() => {
+    if (isPlaying) return;
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion) return;
+
+    let rafId = 0;
+    let lastDrawMs = 0;
+    const tickIdleShake = (now: number) => {
+      if (now - lastDrawMs >= 33) {
+        lastDrawMs = now;
+        paintCanvasFrame(currentTimeRef.current, now / 1000);
+      }
+      rafId = requestAnimationFrame(tickIdleShake);
+    };
+    rafId = requestAnimationFrame(tickIdleShake);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, paintCanvasFrame]);
 
   useEffect(() => {
     if (!renderFrameNowRef) return;
@@ -297,15 +396,50 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
   const handleToggleFullscreen = async () => {
     const el = containerRef.current;
     if (!el) return;
+    const doc = document as unknown as {
+      fullscreenElement?: Element | null;
+      webkitFullscreenElement?: Element | null;
+      exitFullscreen?: () => Promise<void>;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    const fsElement = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+
+    if (isFullscreen || fsElement) {
+      setIsExpandedPreview(false);
+      setIsNativeFullscreen(false);
+      try {
+        if (fsElement && doc.exitFullscreen) {
+          await doc.exitFullscreen();
+        } else if (fsElement && doc.webkitExitFullscreen) {
+          await doc.webkitExitFullscreen();
+        }
+      } catch {
+        // Ensure UI exits expanded/fullscreen state even if browser rejects exitFullscreen
+      }
+      return;
+    }
+
+    const reqEl = el as HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
     try {
-      if (!document.fullscreenElement) {
-        await el.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
+      if (document.fullscreenEnabled && reqEl.requestFullscreen) {
+        await reqEl.requestFullscreen();
+        if (doc.fullscreenElement ?? doc.webkitFullscreenElement) {
+          setIsNativeFullscreen(true);
+          return;
+        }
+      } else if (reqEl.webkitRequestFullscreen) {
+        await reqEl.webkitRequestFullscreen();
+        if (doc.fullscreenElement ?? doc.webkitFullscreenElement) {
+          setIsNativeFullscreen(true);
+          return;
+        }
       }
     } catch {
-      // Ignore fullscreen denial in restricted iframe
+      // Restricted iframe or browser denied native fullscreen — fall back cleanly below
     }
+    setIsExpandedPreview(true);
   };
 
   const handlePointerDownCanvas = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -349,7 +483,11 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col h-full min-h-0 bg-[#121922] select-none"
+      className={
+        isExpandedPreview
+          ? 'fixed inset-0 z-50 flex flex-col overflow-hidden bg-[#121922] select-none'
+          : 'flex flex-col h-full min-h-0 bg-[#121922] select-none'
+      }
     >
       {/* Program Header Strip */}
       <div className="min-h-9 sm:h-9 px-3 py-1.5 sm:py-0 border-b border-[#273545] bg-[#19232E] flex flex-col sm:flex-row items-center justify-center sm:justify-between gap-1.5 sm:gap-3 shrink-0">
@@ -418,6 +556,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
             type="button"
             onClick={handleToggleFullscreen}
             aria-label={isFullscreen ? 'Exit fullscreen preview' : 'Enter fullscreen preview'}
+            title={isFullscreen ? 'Minimize preview (Esc)' : 'Maximize preview'}
             className="v-btn p-1.5 cursor-pointer"
           >
             {isFullscreen ? (
@@ -485,9 +624,9 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
             </div>
           )}
 
-          {/* Clean Empty Workspace State (only when still on solid default backdrop) */}
+          {/* Clean Empty Workspace State (centered, transparent so bottom-left watermark stays visible) */}
           {!hasAudio && project.lyrics.length === 0 && project.background.type === 'solid' && (
-            <div className="absolute inset-0 z-[2] bg-[#0C1117]/95 flex flex-col items-center justify-center p-4 sm:p-6 text-center pointer-events-none">
+            <div className="absolute inset-0 z-[2] bg-transparent flex flex-col items-center justify-center p-4 sm:p-6 text-center pointer-events-none">
               <p className="text-sm font-semibold text-[#EEF3F8] mb-1">
                 Start Lyrics Video Project
               </p>
@@ -497,13 +636,9 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
             </div>
           )}
 
-          {/* Audio Loaded, No Lyrics Yet State (hidden while playing or scrubbed so [instrumental] displays cleanly) */}
+          {/* Audio Loaded, No Lyrics Yet State (hidden while playing or scrubbed so watermark and lyrics display cleanly) */}
           {hasAudio && project.lyrics.length === 0 && !isPlaying && currentTime === 0 && (
-            <div
-              className={`absolute inset-0 z-[2] flex flex-col items-center justify-center p-4 sm:p-6 text-center ${
-                project.background.type === 'solid' ? 'bg-[#0C1117]/90' : 'pointer-events-none'
-              }`}
-            >
+            <div className="absolute inset-0 z-[2] flex flex-col items-center justify-center p-4 sm:p-6 text-center pointer-events-none">
               {project.background.type === 'solid' && (
                 <>
                   <p className="text-sm font-semibold text-[#EEF3F8] mb-1">

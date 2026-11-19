@@ -33,23 +33,29 @@ export type AutoEffectStyle =
   | 'dynamic-stage'
   | 'minimal-editorial';
 
+export type VocalRole = 'lead' | 'backing' | 'choir' | 'adlib';
+
 export interface WordTiming {
   id: string;
   text: string;
   start: number;
   end: number;
+  confidence?: number;
+  uncertain?: boolean;
 }
 
 export interface LyricLine {
   id: string;
   text: string;
   section: SectionType;
+  vocalRole?: VocalRole;
   start: number;
   end: number;
   effect: EffectType;
   effectOverride: boolean;
   words: WordTiming[];
   confidence?: number;
+  uncertain?: boolean;
   entranceDuration?: number;
   exitDuration?: number;
   delayBefore?: number;
@@ -103,6 +109,40 @@ export interface SyncReport {
   timestamp: number;
 }
 
+export interface WatermarkConfig {
+  enabled: boolean;
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  position: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'bottom-center';
+  opacity: number;
+}
+
+export interface VocalLayerSettings {
+  visible: boolean;
+  color: string;
+  fontScale: number; // Relative to lead fontSize (0.5..0.95)
+  positionX: number; // 0..1 normalized center X
+  positionY: number; // 0..1 normalized center Y
+}
+
+export interface VocalLayersConfig {
+  leadVisible: boolean;
+  backing: VocalLayerSettings;
+  backingUserConfigured?: boolean;
+  choirVisible: boolean;
+  choirColor: string;
+  adlibVisible: boolean;
+  adlibColor: string;
+}
+
+export type VocalLayersPatch = Omit<Partial<VocalLayersConfig>, 'backing'> & {
+  backing?: Partial<VocalLayerSettings>;
+};
+
 export interface ProjectData {
   id: string;
   name: string;
@@ -110,6 +150,7 @@ export interface ProjectData {
   updatedAt: number;
   aspectRatio: AspectRatio;
   duration: number;
+  language?: string;
   audioFileName: string | null;
   audioMimeType: string | null;
   audioVolume?: number; // 0..2 linear gain multiplier (default 1 = 100%)
@@ -117,7 +158,9 @@ export interface ProjectData {
   autoEffectsEnabled: boolean;
   autoEffectStyle: AutoEffectStyle;
   typography: TypographyStyle;
+  vocalLayers?: VocalLayersConfig;
   background: BackgroundConfig;
+  watermark: WatermarkConfig;
   lyrics: LyricLine[];
   syncReport: SyncReport | null;
 }

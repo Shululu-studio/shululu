@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  alignLinesToWindow,
   alignLyricsToAudio,
   computeAudioAnalysis,
   distributeLyricsProportionally,
+  fillRemainingSongCuesWithAnalysis,
   refineSegmentsWithAcousticAnalysis,
   refineWithAiTimestamps,
+  resolveLineOverlaps,
   shiftLyricsTiming,
   snapWordTimingsToOnsets,
 } from './audioSync';
@@ -346,3 +349,374 @@ test('shiftLyricsTiming nudges all lines and word timings uniformly without over
   assert.equal(clampedStart[0].start, 0);
   assert.ok(clampedStart[1].start >= clampedStart[0].end);
 });
+
+test('refineSegmentsWithAcousticAnalysis independently calibrates non-uniform drift in 2-9 minute sections', () => {
+  const totalDuration = 540; // 9 minutes
+  const frameDurationSec = 0.05; // 50ms frames -> 10,800 frames (fast & crisp)
+  const numFrames = Math.ceil(totalDuration / frameDurationSec);
+  const envelope = new Array(numFrames).fill(0.03);
+  const onsets: number[] = [];
+  const phrases: Array<{ start: number; end: number; energy: number }> = [];
+
+  // True singing bursts across 9 minutes:
+  // Window 1 (~0-1m): on time
+  // Window 2 (~3m): actual singing at 180s, 195s, 210s (input drifted +0.75s late)
+  // Window 3 (~7.5-8.5m): actual singing at 450s, 470s, 495s (input drifted -0.80s early)
+  const trueBursts = [
+    { start: 15, end: 18 },
+    { start: 32, end: 35 },
+    { start: 180, end: 184 },
+    { start: 195, end: 199 },
+    { start: 210, end: 214 },
+    { start: 450, end: 454 },
+    { start: 470, end: 474 },
+    { start: 495, end: 499 },
+  ];
+
+  for (const b of trueBursts) {
+    phrases.push({ start: b.start, end: b.end, energy: 0.85 });
+    onsets.push(b.start);
+    const fStart = Math.floor(b.start / frameDurationSec);
+    const fEnd = Math.min(numFrames - 1, Math.ceil(b.end / frameDurationSec));
+    for (let f = fStart; f <= fEnd; f++) {
+      envelope[f] = 0.88;
+    }
+  }
+
+  const analysis = {
+    envelope,
+    onsets,
+    waveformPeaks: [],
+    frameDurationSec,
+    totalDuration,
+    phrases,
+    dynamicRange: 0.8,
+  };
+
+  const drifts = [0, 0, 0.75, 0.75, 0.75, -0.8, -0.8, -0.8];
+  const driftedLines = trueBursts.map((b, idx) => ({
+    id: `long_${idx}`,
+    text: `Worship lyric cue ${idx + 1}`,
+    section: (idx >= 2 ? 'chorus' : 'verse') as 'verse' | 'chorus',
+    start: Number((b.start + drifts[idx]).toFixed(2)),
+    end: Number((b.end + drifts[idx]).toFixed(2)),
+    effect: 'fade' as const,
+    effectOverride: false,
+    words: [],
+  }));
+
+  const refined = refineSegmentsWithAcousticAnalysis(driftedLines, analysis, totalDuration);
+  assert.equal(refined.length, trueBursts.length);
+
+  for (let i = 0; i < trueBursts.length; i++) {
+    assert.ok(
+      Math.abs(refined[i].start - trueBursts[i].start) <= 0.18,
+      `Line ${i} (${trueBursts[i].start}s) drifted: got ${refined[i].start}s`
+    );
+  }
+});
+
+test('refineWithAiTimestamps interpolates 2-9 minute missing gaps onto actual vocal phrases instead of silence', () => {
+  const totalDuration = 540;
+  const frameDurationSec = 0.05;
+  const numFrames = Math.ceil(totalDuration / frameDurationSec);
+  const envelope = new Array(numFrames).fill(0.02);
+  const onsets = [15, 160, 260, 380, 490];
+  const phrases = [
+    { start: 15, end: 19, energy: 0.85 },
+    { start: 160, end: 165, energy: 0.85 },
+    { start: 260, end: 265, energy: 0.85 },
+    { start: 380, end: 385, energy: 0.85 },
+    { start: 490, end: 495, energy: 0.85 },
+  ];
+  for (const p of phrases) {
+    for (let f = Math.floor(p.start / frameDurationSec); f <= Math.ceil(p.end / frameDurationSec); f++) {
+      if (f >= 0 && f < numFrames) envelope[f] = 0.85;
+    }
+  }
+
+  const analysis = {
+    envelope,
+    onsets,
+    waveformPeaks: [],
+    frameDurationSec,
+    totalDuration,
+    phrases,
+    dynamicRange: 0.8,
+  };
+
+  const lines = parseLyricsText(
+    'Opening line\nMiddle cue A\nMiddle cue B\nBridge cue C\nClosing anchor',
+    totalDuration
+  ).lines;
+
+  const synced = refineWithAiTimestamps(
+    lines,
+    [
+      { lineIndex: 0, start: 15, end: 19 },
+      { lineIndex: 4, start: 490, end: 495 },
+    ],
+    onsets,
+    totalDuration,
+    [],
+    analysis
+  );
+
+  assert.ok(Math.abs(synced.lines[1].start - 160) <= 0.5, `Expected ~160s, got ${synced.lines[1].start}`);
+  assert.ok(Math.abs(synced.lines[2].start - 260) <= 0.5, `Expected ~260s, got ${synced.lines[2].start}`);
+  assert.ok(Math.abs(synced.lines[3].start - 380) <= 0.5, `Expected ~380s, got ${synced.lines[3].start}`);
+});
+
+test('fillRemainingSongCuesWithAnalysis aligns 2-9 minute remaining cues to detected vocal phrases', () => {
+  const totalDuration = 540;
+  const frameDurationSec = 0.05;
+  const numFrames = Math.ceil(totalDuration / frameDurationSec);
+  const envelope = new Array(numFrames).fill(0.02);
+  const onsets = [10, 60, 145, 220, 310, 420, 505];
+  const phrases = [
+    { start: 10, end: 14, energy: 0.8 },
+    { start: 60, end: 64, energy: 0.8 },
+    { start: 145, end: 150, energy: 0.85 },
+    { start: 220, end: 225, energy: 0.85 },
+    { start: 310, end: 315, energy: 0.85 },
+    { start: 420, end: 425, energy: 0.85 },
+    { start: 505, end: 510, energy: 0.85 },
+  ];
+  for (const p of phrases) {
+    for (let f = Math.floor(p.start / frameDurationSec); f <= Math.ceil(p.end / frameDurationSec); f++) {
+      if (f >= 0 && f < numFrames) envelope[f] = 0.85;
+    }
+  }
+  const analysis = {
+    envelope,
+    onsets,
+    waveformPeaks: [],
+    frameDurationSec,
+    totalDuration,
+    phrases,
+    dynamicRange: 0.8,
+  };
+
+  const earlyLines = parseLyricsText('[00:10.00]Verse one\n[Chorus]\n[01:00.00]Jireh You are enough', totalDuration).lines;
+  earlyLines[0].end = 14;
+  earlyLines[1].end = 64;
+
+  const filled = fillRemainingSongCuesWithAnalysis(earlyLines, totalDuration, analysis);
+  assert.equal(filled.length, 7);
+  assert.ok(Math.abs(filled[2].start - 145) <= 0.3, `Expected cue 2 at ~145s, got ${filled[2].start}`);
+  assert.ok(Math.abs(filled[6].start - 505) <= 0.3, `Expected cue 6 at ~505s, got ${filled[6].start}`);
+  const windowLines = alignLinesToWindow([earlyLines[1]], 140, 155, analysis);
+  assert.ok(Math.abs(windowLines[0].start - 145) <= 0.25);
+});
+
+test('computeAudioAnalysis detects soft verse word onsets alongside loud chorus peaks', () => {
+  const sampleRate = 8000;
+  const durationSec = 10;
+  const samples = new Float32Array(sampleRate * durationSec);
+
+  for (let i = 0; i < samples.length; i++) {
+    const t = i / sampleRate;
+    // Two soft verse word bursts at 1.20s and 1.85s (~12% amplitude)
+    // followed by a loud chorus burst at 5.00s-8.50s (85% amplitude)
+    if ((t >= 1.2 && t <= 1.55) || (t >= 1.85 && t <= 2.3)) {
+      samples[i] = 0.12 * Math.sin(2 * Math.PI * 520 * t);
+    } else if (t >= 5.0 && t <= 8.5) {
+      samples[i] = 0.85 * Math.sin(2 * Math.PI * 640 * t);
+    } else {
+      samples[i] = 0.002 * Math.sin(2 * Math.PI * 80 * t);
+    }
+  }
+
+  const analysis = computeAudioAnalysis(samples, sampleRate, 10, 200);
+  const nearSoftWord1 = analysis.onsets.some((o) => Math.abs(o - 1.2) <= 0.1);
+  const nearSoftWord2 = analysis.onsets.some((o) => Math.abs(o - 1.85) <= 0.1);
+  assert.ok(nearSoftWord1, `Expected soft verse onset near 1.20s, got ${analysis.onsets.join(', ')}`);
+  assert.ok(nearSoftWord2, `Expected soft verse onset near 1.85s, got ${analysis.onsets.join(', ')}`);
+});
+
+test('snapWordTimingsToOnsets detects sub-line envelope attacks when global onsets are empty', () => {
+  const frameDurationSec = 0.01;
+  const envelope = new Array(300).fill(0.08);
+  // Word attacks at 0.50s, 1.00s, and 1.55s
+  for (let f = 50; f <= 85; f++) envelope[f] = 0.72;
+  for (let f = 100; f <= 135; f++) envelope[f] = 0.78;
+  for (let f = 155; f <= 210; f++) envelope[f] = 0.84;
+
+  const words = snapWordTimingsToOnsets(
+    'Hold me close',
+    0.5,
+    2.2,
+    [], // intentionally empty global onsets
+    'line_sub',
+    envelope,
+    frameDurationSec
+  );
+
+  assert.equal(words.length, 3);
+  assert.ok(Math.abs(words[1].start - 1.0) <= 0.12, `Expected word 1 near 1.00s, got ${words[1].start}`);
+  assert.ok(Math.abs(words[2].start - 1.55) <= 0.12, `Expected word 2 near 1.55s, got ${words[2].start}`);
+});
+
+test('snapWordTimingsToOnsets retains sustained decaying vowel tail through gentle vocal release', () => {
+  const frameDurationSec = 0.01;
+  const totalFrames = 400; // 4.0s
+  const envelope = new Array(totalFrames).fill(0.02);
+  // Attack at 0.5s-1.2s (0.90), sustained decaying vowel tail from 1.2s to 3.0s (~0.10-0.18)
+  for (let f = 50; f <= 120; f++) envelope[f] = 0.9;
+  for (let f = 121; f <= 300; f++) {
+    const progress = (f - 121) / 179;
+    envelope[f] = 0.18 - progress * 0.08; // still ~0.10 above 0.02 floor
+  }
+
+  const words = snapWordTimingsToOnsets(
+    'Ooooooh Hallelujah',
+    0.5,
+    3.1,
+    [0.5, 1.3],
+    'line_sustain',
+    envelope,
+    frameDurationSec
+  );
+
+  assert.equal(words.length, 2);
+  assert.ok(
+    words[1].end >= 2.95,
+    `Expected sustained decaying vocal note to stay visible until ~3.0s, got ${words[1].end}`
+  );
+});
+
+test('resolveLineOverlaps and refineSegmentsWithAcousticAnalysis preserve simultaneous lead and backing vocal cues', () => {
+  const frameDurationSec = 0.02;
+  const totalDuration = 8;
+  const envelope = new Array(Math.ceil(totalDuration / frameDurationSec)).fill(0.02);
+  for (let f = Math.floor(1.0 / frameDurationSec); f <= Math.ceil(4.2 / frameDurationSec); f++) {
+    envelope[f] = 0.82;
+  }
+
+  const analysis = {
+    envelope,
+    onsets: [1.0, 1.5],
+    waveformPeaks: [],
+    frameDurationSec,
+    totalDuration,
+    phrases: [{ start: 1.0, end: 4.2, energy: 0.82 }],
+    dynamicRange: 0.78,
+  };
+
+  const lines = [
+    {
+      id: 'lead_1',
+      text: 'You are enough',
+      section: 'chorus' as const,
+      vocalRole: 'lead' as const,
+      start: 1.0,
+      end: 3.8,
+      effect: 'fade' as const,
+      effectOverride: false,
+      words: [],
+    },
+    {
+      id: 'bg_1',
+      text: '(You are enough)',
+      section: 'chorus' as const,
+      vocalRole: 'backing' as const,
+      start: 1.5,
+      end: 4.1,
+      effect: 'fade' as const,
+      effectOverride: false,
+      words: [],
+    },
+  ];
+
+  const resolved = resolveLineOverlaps(lines, totalDuration);
+  assert.ok(resolved[1].start < resolved[0].end, 'resolveLineOverlaps must keep distinct-role overlap intact');
+
+  const refined = refineSegmentsWithAcousticAnalysis(lines, analysis, totalDuration);
+  assert.equal(refined.length, 2);
+  assert.ok(
+    refined[1].start < refined[0].end,
+    `Expected overlapping backing cue start (${refined[1].start}) < lead cue end (${refined[0].end})`
+  );
+});
+
+test('refineSegmentsWithAcousticAnalysis with preserveAiAnchors prevents backing-beat drift across sentence boundaries', () => {
+  const sampleRate = 8000;
+  const durationSec = 10;
+  const samples = new Float32Array(sampleRate * durationSec);
+  // Loud beat transients 0.6s BEFORE actual singing cues at 2.0s and 5.5s
+  for (let i = 0; i < samples.length; i++) {
+    const t = i / sampleRate;
+    const drumTransient = (t >= 1.3 && t <= 1.95) || (t >= 4.8 && t <= 5.45) ? 0.65 * Math.sin(2 * Math.PI * 480 * t) : 0;
+    const singing = (t >= 2.0 && t <= 4.0) || (t >= 5.5 && t <= 7.8) ? 0.55 * Math.sin(2 * Math.PI * 520 * t) : 0;
+    samples[i] = drumTransient + singing;
+  }
+
+  const analysis = computeAudioAnalysis(samples, sampleRate, 10, 200);
+  const parsed = parseLyricsText('[00:02.00]First sentence here\n[00:05.50]Second sentence begins', durationSec);
+  parsed.lines[0].end = 4.0;
+  parsed.lines[1].end = 7.8;
+
+  const refined = refineSegmentsWithAcousticAnalysis(parsed.lines, analysis, durationSec, {
+    preserveAiAnchors: true,
+  });
+
+  assert.ok(Math.abs(refined[0].start - 2.0) <= 0.16, `Line 0 drifted too far: ${refined[0].start}`);
+  assert.ok(Math.abs(refined[1].start - 5.5) <= 0.16, `Line 1 drifted too far: ${refined[1].start}`);
+});
+
+test('refineSegmentsWithAcousticAnalysis preserves full line.end through soft consonant ending without early cutoff', () => {
+  const frameDurationSec = 0.02;
+  const totalDuration = 8;
+  const numFrames = Math.ceil(totalDuration / frameDurationSec);
+  const envelope = new Array(numFrames).fill(0.02);
+
+  // Loud sung opening ("Ametenda") from 1.0s to 2.2s, soft ending ("amani") decaying 2.2s to 3.7s
+  for (let f = 50; f <= 110; f++) envelope[f] = 0.92;
+  for (let f = 111; f <= 185; f++) {
+    // Amplitude fades softly down to ~0.07 (less than 6% contrast over peak 0.92!)
+    envelope[f] = Math.max(0.055, 0.25 - ((f - 111) / 74) * 0.19);
+  }
+
+  const analysis = {
+    envelope,
+    onsets: [1.0, 2.2],
+    waveformPeaks: [],
+    frameDurationSec,
+    totalDuration,
+    phrases: [{ start: 1.0, end: 3.7, energy: 0.92 }],
+    dynamicRange: 0.88,
+  };
+
+  const lines = [
+    {
+      id: 'sw_1',
+      text: 'Ametenda amani',
+      section: 'chorus' as const,
+      vocalRole: 'lead' as const,
+      start: 1.0,
+      end: 3.65,
+      effect: 'fade' as const,
+      effectOverride: false,
+      words: [
+        { id: 'sw_w0', text: 'Ametenda', start: 1.0, end: 2.2 },
+        { id: 'sw_w1', text: 'amani', start: 2.2, end: 3.65 },
+      ],
+    },
+  ];
+
+  const refined = refineSegmentsWithAcousticAnalysis(lines, analysis, totalDuration, {
+    preserveAiAnchors: true,
+  });
+
+  assert.equal(refined.length, 1);
+  assert.ok(
+    refined[0].end >= 3.65,
+    `Expected line end to stay >= 3.65s until pronunciation ends, got ${refined[0].end}`
+  );
+  assert.ok(
+    refined[0].words[1].end >= refined[0].end - 0.01,
+    `Expected final word end (${refined[0].words[1].end}) to stay visible until line end (${refined[0].end})`
+  );
+});
+
+

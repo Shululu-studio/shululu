@@ -1,4 +1,4 @@
-import { LyricLine, SyncReport, WordTiming } from '../types/editor';
+import { LyricLine, SyncReport, VocalRole, WordTiming } from '../types/editor';
 import { countSyllables } from './lyricsParser';
 
 export interface VocalPhrase {
@@ -126,15 +126,28 @@ export function computeAudioAnalysis(
   const p90 = sorted[Math.floor(sorted.length * 0.9)] ?? 0;
   const dynamicRange = Math.max(0, p90 - p20);
 
-  // Onset peak picking
+  // Adaptive local-window onset peak picking so quiet verse words remain detectable
+  // even when loud choruses elevate the track-wide mean flux.
   const meanFlux =
     fluxRaw.reduce((acc, v) => acc + v, 0) / Math.max(1, fluxRaw.length);
-  const onsetThreshold = meanFlux * 1.32 + normMax * 0.01;
-  const minOnsetGapFrames = Math.max(2, Math.round(0.09 / frameDurationSec));
+  const fluxPrefix = new Float64Array(numFrames + 1);
+  for (let f = 0; f < numFrames; f++) {
+    fluxPrefix[f + 1] = fluxPrefix[f] + fluxRaw[f];
+  }
+  const localHalfWin = Math.max(12, Math.round(0.6 / frameDurationSec));
+  const minOnsetGapFrames = Math.max(2, Math.round(0.075 / frameDurationSec));
   const onsets: number[] = [];
   let lastOnsetFrame = -minOnsetGapFrames;
 
   for (let f = 1; f < numFrames - 1; f++) {
+    const wStart = Math.max(0, f - localHalfWin);
+    const wEnd = Math.min(numFrames, f + localHalfWin + 1);
+    const localMean = (fluxPrefix[wEnd] - fluxPrefix[wStart]) / Math.max(1, wEnd - wStart);
+    const onsetThreshold = Math.max(
+      localMean * 1.38 + normMax * 0.006,
+      meanFlux * 0.32 + normMax * 0.008
+    );
+
     if (
       fluxRaw[f] > onsetThreshold &&
       fluxRaw[f] >= fluxRaw[f - 1] &&
@@ -289,7 +302,9 @@ export function snapWordTimingsToOnsets(
       }
       if (localMax - localMin >= 0.1) {
         const minNeededSpan = Math.min(fullDuration, Math.max(0.28, tokens.length * 0.11));
-        const tailThresh = localMin + (localMax - localMin) * 0.14;
+        // Gentle release threshold (4% above local floor) so soft ending consonants
+        // and held worship notes remain visible until full pronunciation decay.
+        const tailThresh = localMin + (localMax - localMin) * 0.04;
 
         let lastActive = fEnd;
         while (lastActive > fStart && (envelope[lastActive] ?? 0) < tailThresh) {
@@ -298,7 +313,7 @@ export function snapWordTimingsToOnsets(
 
         const candEnd = Math.max(
           activeStart + minNeededSpan,
-          Math.min(safeEnd, (lastActive + 1) * frameDurationSec + 0.04)
+          Math.min(safeEnd, (lastActive + 1) * frameDurationSec + 0.1)
         );
         if (candEnd - activeStart >= minNeededSpan && candEnd <= safeEnd) {
           activeEnd = candEnd;
@@ -352,9 +367,34 @@ export function snapWordTimingsToOnsets(
     return linearTime * 0.62 + envTime * 0.38;
   };
 
-  const localOnsets = onsets.filter(
+  const candidateOnsets = onsets.filter(
     (o) => Number.isFinite(o) && o >= activeStart - 0.04 && o <= activeEnd - minWordDur
   );
+
+  // Also detect local sub-line syllable/word attack rises directly from localEnvSlice
+  // so soft consonants and rapid words snap cleanly even if global spectral flux missed them.
+  if (localEnvSlice && localEnvSlice.length > 4 && frameDurationSec && frameDurationSec > 0) {
+    const aStartF = Math.max(0, Math.floor(activeStart / frameDurationSec));
+    const diffs = localEnvSlice.map((val, idx) =>
+      idx === 0 ? 0 : Math.max(0, val - localEnvSlice[idx - 1])
+    );
+    const meanDiff = diffs.reduce((s, d) => s + d, 0) / Math.max(1, diffs.length);
+    const diffThresh = Math.max(0.012, meanDiff * 1.25);
+    const minSubGap = 0.065;
+    for (let k = 1; k < diffs.length - 1; k++) {
+      if (diffs[k] > diffThresh && diffs[k] >= diffs[k - 1] && diffs[k] > diffs[k + 1]) {
+        const t = Number(((aStartF + k) * frameDurationSec).toFixed(3));
+        if (
+          t >= activeStart &&
+          t <= activeEnd - minWordDur &&
+          !candidateOnsets.some((o) => Math.abs(o - t) < minSubGap)
+        ) {
+          candidateOnsets.push(t);
+        }
+      }
+    }
+    candidateOnsets.sort((a, b) => a - b);
+  }
 
   let accWeight = 0;
   const words: WordTiming[] = [];
@@ -369,14 +409,14 @@ export function snapWordTimingsToOnsets(
       i === tokens.length - 1 ? activeEnd : mapSyllableRatioToTime(endRatio);
     let snappedStart = expectedStart;
 
-    if (i > 0 && localOnsets.length > 0) {
+    if (i > 0 && candidateOnsets.length > 0) {
       const remainingWords = tokens.length - i;
       const maxAllowedStart = activeEnd - remainingWords * minWordDur;
       const minAllowedStart = words[i - 1].start + minWordDur;
 
       let bestOnset = expectedStart;
-      let bestDist = 0.18;
-      for (const onset of localOnsets) {
+      let bestDist = Math.min(0.22, Math.max(0.14, (duration / tokens.length) * 0.55));
+      for (const onset of candidateOnsets) {
         const dist = Math.abs(onset - expectedStart);
         if (dist < bestDist && onset >= minAllowedStart && onset <= maxAllowedStart) {
           bestDist = dist;
@@ -562,18 +602,26 @@ function normalizeAlignedMonotonicity(
     Number.isFinite(totalDuration) && totalDuration > 0 ? totalDuration : 30;
 
   const result: LyricLine[] = [];
+  const lastEndByRole: Partial<Record<VocalRole, number>> = {};
+
   for (let i = 0; i < aligned.length; i++) {
     const line = aligned[i];
-    const prevEnd = result[i - 1]?.end ?? 0;
+    const role = line.vocalRole ?? 'lead';
+    const prevRoleEnd = lastEndByRole[role];
+    const prevEnd = prevRoleEnd ?? 0;
     const rawStart = Number.isFinite(line.start) ? line.start : prevEnd + 0.04;
     const start = Number(
-      Math.max(prevEnd + (i > 0 ? 0.02 : 0), Math.min(safeDuration - 0.25, rawStart)).toFixed(2)
+      Math.max(
+        prevRoleEnd !== undefined ? prevRoleEnd + 0.02 : 0,
+        Math.min(safeDuration - 0.25, rawStart)
+      ).toFixed(2)
     );
     const rawEnd = Number.isFinite(line.end) ? line.end : start + 1.5;
     const end = Number(
       Math.max(start + 0.25, Math.min(safeDuration, rawEnd)).toFixed(2)
     );
 
+    lastEndByRole[role] = end;
     result.push({
       ...line,
       start,
@@ -883,11 +931,16 @@ function getEnvelopeAtTime(
   return envelope[idx] ?? 0;
 }
 
+function lineRoleLayer(line: LyricLine): VocalRole {
+  return line.vocalRole ?? 'lead';
+}
+
 export function resolveLineOverlaps(lines: LyricLine[], totalDuration: number): LyricLine[] {
   const safeDuration = Number.isFinite(totalDuration) && totalDuration > 0 ? totalDuration : 30;
   const out = lines.map((l) => ({ ...l }));
   const minDur = 0.35;
-  const gap = 0.03;
+  const gap = 0.015;
+  const lastIndexByRole: Partial<Record<VocalRole, number>> = {};
 
   for (let i = 0; i < out.length; i++) {
     out[i].start = Number(
@@ -897,18 +950,18 @@ export function resolveLineOverlaps(lines: LyricLine[], totalDuration: number): 
       Math.max(out[i].start + minDur, Math.min(safeDuration, Number.isFinite(out[i].end) ? out[i].end : out[i].start + 1.5)).toFixed(2)
     );
 
-    if (i > 0) {
-      const prev = out[i - 1];
+    const role = lineRoleLayer(out[i]);
+    const prevSameRoleIdx = lastIndexByRole[role];
+    if (prevSameRoleIdx !== undefined) {
+      const prev = out[prevSameRoleIdx];
       const cur = out[i];
       if (cur.start < prev.end + gap) {
         const overlap = prev.end + gap - cur.start;
-        // Prefer trimming prev's lingering tail if prev stays comfortably readable (>= 0.45s),
-        // preventing a single slow line from pushing every subsequent cue late.
-        const maxTrimPrev = Math.max(0, prev.end - (prev.start + 0.45));
+        // Prefer keeping prev's tail pronunciation intact, trimming gently (<= 0.32s) only when needed.
+        const maxTrimPrev = Math.min(0.32, Math.max(0, prev.end - (prev.start + 0.45)));
         if (overlap <= maxTrimPrev) {
           prev.end = Number(Math.max(prev.start + 0.4, cur.start - gap).toFixed(2));
         } else {
-          // Split the budget evenly so neither line swallows the other
           if (maxTrimPrev > 0) {
             prev.end = Number((prev.end - Math.min(maxTrimPrev, overlap * 0.55)).toFixed(2));
           }
@@ -919,17 +972,19 @@ export function resolveLineOverlaps(lines: LyricLine[], totalDuration: number): 
         }
       }
     }
+    lastIndexByRole[role] = i;
   }
   return out;
 }
 
-function estimateGlobalTimingOffset(
+function estimateTimingOffsetForSubset(
   lines: LyricLine[],
   analysis: AudioAnalysisResult,
-  totalDuration: number
+  totalDuration: number,
+  maxSearchDelta = 0.9
 ): number {
   const { envelope, frameDurationSec, dynamicRange, onsets } = analysis;
-  if (envelope.length < 10 || frameDurationSec <= 0 || dynamicRange < 0.05 || lines.length < 2) {
+  if (envelope.length < 10 || frameDurationSec <= 0 || dynamicRange < 0.05 || lines.length === 0) {
     return 0;
   }
 
@@ -977,14 +1032,14 @@ function estimateGlobalTimingOffset(
     const activeMean = activeCount > 0 ? activeSum / activeCount : 0;
     const gapMean = gapCount > 0 ? gapSum / gapCount : activeMean * 0.7;
     const onsetBonus = (onsetHits / Math.max(1, lines.length)) * 0.24;
-    return activeMean - gapMean * 0.92 + onsetBonus - 0.04 * delta * delta;
+    return activeMean - gapMean * 0.92 + onsetBonus - 0.03 * delta * delta;
   };
 
   const baseScore = scoreShift(0);
   let bestDelta = 0;
   let bestScore = baseScore;
 
-  for (let delta = -0.9; delta <= 0.901; delta += 0.02) {
+  for (let delta = -maxSearchDelta; delta <= maxSearchDelta + 0.001; delta += 0.02) {
     const rounded = Number(delta.toFixed(3));
     if (rounded === 0) continue;
     const sc = scoreShift(rounded);
@@ -1000,13 +1055,93 @@ function estimateGlobalTimingOffset(
 }
 
 /**
+ * Estimates smooth per-line timing offsets across long songs (2-10 minutes) using
+ * local ~75s analysis windows so progressive clock or tempo drift in minutes 2-9
+ * is calibrated independently from the opening verses.
+ */
+function computePerLineWindowOffsets(
+  lines: LyricLine[],
+  analysis: AudioAnalysisResult,
+  totalDuration: number
+): number[] {
+  if (lines.length === 0) return [];
+  const firstStart = lines[0].start;
+  const lastEnd = lines[lines.length - 1].end;
+  const spanSec = Math.max(0, lastEnd - firstStart);
+
+  if (lines.length < 6 || spanSec <= 95) {
+    const globalDelta =
+      lines.length >= 2 ? estimateTimingOffsetForSubset(lines, analysis, totalDuration, 0.9) : 0;
+    return lines.map(() => globalDelta);
+  }
+
+  const WINDOW_SPAN_SEC = 75;
+  const MAX_CONTIGUOUS_GAP_SEC = 40;
+  const windows: Array<{ startIdx: number; endIdx: number }> = [];
+  let startIdx = 0;
+
+  while (startIdx < lines.length) {
+    const winOrigin = lines[startIdx].start;
+    let endIdx = startIdx;
+    while (
+      endIdx + 1 < lines.length &&
+      lines[endIdx + 1].start - lines[endIdx].end <= MAX_CONTIGUOUS_GAP_SEC &&
+      (lines[endIdx + 1].end - winOrigin <= WINDOW_SPAN_SEC || endIdx - startIdx + 1 < 4)
+    ) {
+      endIdx++;
+    }
+    windows.push({ startIdx, endIdx });
+    startIdx = endIdx + 1;
+  }
+
+  if (windows.length > 1) {
+    const lastWin = windows[windows.length - 1];
+    const prevWin = windows[windows.length - 2];
+    const seamGap = lines[lastWin.startIdx].start - lines[prevWin.endIdx].end;
+    if (lastWin.endIdx - lastWin.startIdx + 1 < 3 && seamGap <= MAX_CONTIGUOUS_GAP_SEC) {
+      prevWin.endIdx = lastWin.endIdx;
+      windows.pop();
+    }
+  }
+
+  const anchors = windows.map((w) => {
+    const subset = lines.slice(w.startIdx, w.endIdx + 1);
+    const delta = estimateTimingOffsetForSubset(subset, analysis, totalDuration, 1.35);
+    const center = (subset[0].start + subset[subset.length - 1].end) * 0.5;
+    return { center, delta };
+  });
+
+  if (anchors.length === 1) {
+    return lines.map(() => anchors[0].delta);
+  }
+
+  return lines.map((line) => {
+    const t = (line.start + line.end) * 0.5;
+    if (t <= anchors[0].center) return anchors[0].delta;
+    if (t >= anchors[anchors.length - 1].center) return anchors[anchors.length - 1].delta;
+    for (let a = 0; a < anchors.length - 1; a++) {
+      const left = anchors[a];
+      const right = anchors[a + 1];
+      if (t >= left.center && t <= right.center) {
+        const ratio =
+          right.center > left.center ? (t - left.center) / (right.center - left.center) : 0;
+        return Number((left.delta * (1 - ratio) + right.delta * ratio).toFixed(3));
+      }
+    }
+    return 0;
+  });
+}
+
+/**
  * Refines LLM-generated or rough lyric line timestamps against decoded vocal-band
- * envelope transitions and spectral-flux onsets so cues snap tightly to real singing.
+ * envelope transitions and spectral-flux onsets so cues snap tightly to real singing
+ * from start to finish even across 5-10 minute tracks.
  */
 export function refineSegmentsWithAcousticAnalysis(
   lines: LyricLine[],
   analysis: AudioAnalysisResult | null | undefined,
-  totalDuration: number
+  totalDuration: number,
+  options?: { preserveAiAnchors?: boolean }
 ): LyricLine[] {
   if (lines.length === 0) return [];
   const safeDuration =
@@ -1023,37 +1158,83 @@ export function refineSegmentsWithAcousticAnalysis(
     }));
   }
 
+  const preserveAiAnchors = Boolean(options?.preserveAiAnchors);
   const { envelope, frameDurationSec, onsets, dynamicRange } = analysis;
-  const globalOffset = estimateGlobalTimingOffset(lines, analysis, safeDuration);
+  const lineOffsets = preserveAiAnchors
+    ? lines.map(() => 0)
+    : computePerLineWindowOffsets(lines, analysis, safeDuration);
 
-  const shifted = lines.map((l) => ({
-    ...l,
-    start: Math.max(0, Math.min(safeDuration - 0.35, l.start + globalOffset)),
-    end: Math.max(0.35, Math.min(safeDuration, l.end + globalOffset)),
-  }));
+  const shifted = lines.map((l, idx) => {
+    const offset = lineOffsets[idx] ?? 0;
+    return {
+      ...l,
+      start: Math.max(0, Math.min(safeDuration - 0.35, l.start + offset)),
+      end: Math.max(0.35, Math.min(safeDuration, l.end + offset)),
+    };
+  });
 
   const snapped: LyricLine[] = [];
-  const backSearchRadius = dynamicRange >= 0.05 ? 0.9 : 0.25;
-  const fwdSearchRadius = dynamicRange >= 0.05 ? 0.42 : 0.16;
+  const backSearchRadius = preserveAiAnchors
+    ? 0.14
+    : dynamicRange >= 0.05
+      ? 0.9
+      : 0.25;
+  const fwdSearchRadius = preserveAiAnchors
+    ? 0.14
+    : dynamicRange >= 0.05
+      ? 0.42
+      : 0.16;
 
   for (let i = 0; i < shifted.length; i++) {
     const line = shifted[i];
-    // Never let a preceding line's lingering reverb tail block line i from snapping back to its true vocal onset.
-    const prevFloor = i > 0 ? snapped[i - 1].start + 0.38 : 0;
-    const nextStart = i < shifted.length - 1 ? shifted[i + 1].start : safeDuration;
+    const curRole = lineRoleLayer(line);
+    let prevSameIdx = -1;
+    for (let j = i - 1; j >= 0; j--) {
+      if (lineRoleLayer(shifted[j]) === curRole) {
+        prevSameIdx = j;
+        break;
+      }
+    }
+    let nextSameIdx = -1;
+    for (let j = i + 1; j < shifted.length; j++) {
+      if (lineRoleLayer(shifted[j]) === curRole) {
+        nextSameIdx = j;
+        break;
+      }
+    }
+
+    // Check whether this secondary vocal cue (backing/choir/adlib) intentionally overlaps a lead cue.
+    const overlapsDifferentRole =
+      curRole !== 'lead' &&
+      shifted.some(
+        (other, j) =>
+          j !== i &&
+          lineRoleLayer(other) !== curRole &&
+          Math.min(line.end, other.end) - Math.max(line.start, other.start) > 0.15
+      );
+
+    // Never let a preceding sequential line's lingering reverb tail block line i from snapping back.
+    const prevFloor = prevSameIdx >= 0 ? snapped[prevSameIdx].start + 0.38 : 0;
+    const nextStart = nextSameIdx >= 0 ? shifted[nextSameIdx].start : safeDuration;
 
     const minStart = Math.max(prevFloor, line.start - backSearchRadius, 0);
-    const maxStart = Math.min(line.end - 0.35, line.start + fwdSearchRadius, safeDuration - 0.35);
+    const maxStartBase = Math.min(line.end - 0.35, line.start + fwdSearchRadius, safeDuration - 0.35);
+    const maxStartExpanded = Math.min(
+      line.end - 0.35,
+      line.start + Math.max(fwdSearchRadius, dynamicRange >= 0.05 ? 0.85 : 0.24),
+      safeDuration - 0.35
+    );
+    let maxStart = maxStartBase;
 
     let refinedStart = Math.max(minStart, Math.min(maxStart, line.start));
 
-    if (maxStart > minStart + frameDurationSec * 2) {
+    if (maxStartExpanded > minStart + frameDurationSec * 2) {
       const fMin = Math.max(0, Math.floor(minStart / frameDurationSec));
-      const fMax = Math.min(envelope.length - 1, Math.ceil(maxStart / frameDurationSec));
+      const fMaxExpanded = Math.min(envelope.length - 1, Math.ceil(maxStartExpanded / frameDurationSec));
 
       let localMin = 1;
       let localMax = 0;
-      for (let f = fMin; f <= fMax; f++) {
+      for (let f = fMin; f <= fMaxExpanded; f++) {
         if (envelope[f] < localMin) localMin = envelope[f];
         if (envelope[f] > localMax) localMax = envelope[f];
       }
@@ -1068,13 +1249,15 @@ export function refineSegmentsWithAcousticAnalysis(
 
         if (curEnv < silenceThresh && nextEnv < silenceThresh) {
           startedInSilence = true;
-          for (let f = Math.max(fMin, Math.floor(line.start / frameDurationSec)); f <= fMax; f++) {
+          maxStart = maxStartExpanded;
+          for (let f = Math.max(fMin, Math.floor(line.start / frameDurationSec)); f <= fMaxExpanded; f++) {
             if (envelope[f] >= riseThresh) {
-              refinedStart = Math.max(minStart, f * frameDurationSec - 0.025);
+              refinedStart = Math.max(minStart, Math.min(maxStart, f * frameDurationSec - 0.025));
               break;
             }
           }
         } else {
+          const fMax = Math.min(fMaxExpanded, Math.ceil(maxStart / frameDurationSec));
           // Walk backward from line.start to find the crisp initial rise edge of this phrase
           const fStart = Math.min(fMax, Math.round(line.start / frameDurationSec));
           let entryFrame = fStart;
@@ -1125,27 +1308,47 @@ export function refineSegmentsWithAcousticAnalysis(
       refinedStart = bestOnset;
     }
 
-    // If line i pulled back into line i-1's lingering tail, trim line i-1's end cleanly instead of delaying line i
-    if (i > 0 && refinedStart < snapped[i - 1].end + 0.02) {
-      const trimmedPrevEnd = Math.max(snapped[i - 1].start + 0.35, refinedStart - 0.02);
-      snapped[i - 1] = {
-        ...snapped[i - 1],
+    // If overlapping backing/choir/adlib cue shares the mix with a lead belt, keep its own explicit window
+    // rather than letting the dominant lead attack hijack its timestamps.
+    if (overlapsDifferentRole) {
+      snapped.push({
+        ...line,
+        start: Number(Math.max(prevFloor, line.start).toFixed(2)),
+        end: Number(Math.max(line.start + 0.35, Math.min(safeDuration, line.end)).toFixed(2)),
+      });
+      continue;
+    }
+
+    // If line i pulled back into prevSameIdx's lingering tail, trim prevSameIdx's end cleanly instead of delaying line i
+    if (prevSameIdx >= 0 && refinedStart < snapped[prevSameIdx].end + 0.02) {
+      const trimmedPrevEnd = Math.max(snapped[prevSameIdx].start + 0.35, refinedStart - 0.02);
+      snapped[prevSameIdx] = {
+        ...snapped[prevSameIdx],
         end: Number(trimmedPrevEnd.toFixed(2)),
       };
-      refinedStart = Math.max(refinedStart, snapped[i - 1].end + 0.02);
+      refinedStart = Math.max(refinedStart, snapped[prevSameIdx].end + 0.02);
     }
 
     const startShift = refinedStart - line.start;
     const hardMaxEnd =
-      i < shifted.length - 1 ? Math.max(refinedStart + 0.35, nextStart - 0.03) : safeDuration;
-    const maxEnd = Math.min(safeDuration, hardMaxEnd, line.end + 0.34);
-    const minEndPullback = startShift < -0.1 ? 0.85 : 0.58;
-    const defaultMinEnd = Math.min(maxEnd, Math.max(refinedStart + 0.35, line.end - minEndPullback));
-    let refinedEnd = Math.max(defaultMinEnd, Math.min(maxEnd, line.end + Math.min(0, startShift * 0.4)));
+      nextSameIdx >= 0 ? Math.max(refinedStart + 0.35, nextStart - 0.02) : safeDuration;
+    const maxEnd = Math.min(safeDuration, hardMaxEnd, line.end + (preserveAiAnchors ? 0.35 : 0.85));
+    // Never pull AI-anchored line endings earlier than line.end so final syllables and vowels never vanish mid-word.
+    const defaultMinEnd = preserveAiAnchors
+      ? Math.min(maxEnd, Math.max(refinedStart + 0.35, line.end))
+      : Math.min(
+          maxEnd,
+          Math.max(refinedStart + 0.35, line.end - (startShift < -0.1 ? 0.45 : 0.22))
+        );
+    let refinedEnd = preserveAiAnchors
+      ? defaultMinEnd
+      : Math.max(defaultMinEnd, Math.min(maxEnd, line.end + Math.min(0, startShift * 0.25)));
 
     if (maxEnd > refinedStart + 0.5 && dynamicRange >= 0.04) {
       const tokenCount = Math.max(1, line.text.trim().split(/\s+/).filter(Boolean).length);
-      const minVocalEnd = Math.min(maxEnd, refinedStart + Math.max(0.55, tokenCount * 0.18));
+      const minVocalEnd = preserveAiAnchors
+        ? defaultMinEnd
+        : Math.min(maxEnd, refinedStart + Math.max(0.55, tokenCount * 0.18));
       const fLineStart = Math.max(0, Math.floor(refinedStart / frameDurationSec));
       const fMinEnd = Math.max(fLineStart, Math.floor(minVocalEnd / frameDurationSec));
       const fMax = Math.min(envelope.length - 1, Math.ceil(maxEnd / frameDurationSec));
@@ -1157,7 +1360,9 @@ export function refineSegmentsWithAcousticAnalysis(
         if (envelope[f] > localMax) localMax = envelope[f];
       }
       if (localMax - localMin >= 0.1) {
-        const dropThresh = localMin + (localMax - localMin) * 0.24;
+        // Gentle release threshold (4.5% above floor) so soft ending consonants/vowels
+        // keep the lyric visible through complete pronunciation decay.
+        const dropThresh = localMin + (localMax - localMin) * 0.045;
         let lastActiveFrame = -1;
         for (let f = fMax; f >= fMinEnd; f--) {
           if (envelope[f] >= dropThresh) {
@@ -1168,11 +1373,15 @@ export function refineSegmentsWithAcousticAnalysis(
         if (lastActiveFrame >= fMinEnd) {
           const quietTailSec = (fMax - lastActiveFrame) * frameDurationSec;
           const isSustainedInstrumentalGap =
-            quietTailSec >= 1.15 && localMax - localMin >= 0.15;
-          const activeMinEnd = isSustainedInstrumentalGap ? minVocalEnd : defaultMinEnd;
+            !preserveAiAnchors && quietTailSec >= 1.6 && localMax - localMin >= 0.15;
+          const activeMinEnd = preserveAiAnchors
+            ? defaultMinEnd
+            : isSustainedInstrumentalGap
+              ? minVocalEnd
+              : Math.max(defaultMinEnd, Math.min(maxEnd, line.end - 0.08));
           refinedEnd = Math.max(
             activeMinEnd,
-            Math.min(maxEnd, lastActiveFrame * frameDurationSec + (isSustainedInstrumentalGap ? 0.08 : 0.05))
+            Math.min(maxEnd, lastActiveFrame * frameDurationSec + (preserveAiAnchors ? 0.14 : 0.22))
           );
         }
       }
@@ -1200,49 +1409,72 @@ export function refineSegmentsWithAcousticAnalysis(
         (w, idx) =>
           Number.isFinite(w.start) &&
           Number.isFinite(w.end) &&
-          w.end > w.start + 0.03 &&
-          (idx === 0 || w.start >= origWords[idx - 1].start + 0.02)
+          w.end > w.start + 0.015 &&
+          (idx === 0 || w.start >= origWords[idx - 1].start + 0.01)
       );
 
     if (validMonotonicWords && orig) {
       const coveredSpan = origWords[origWords.length - 1].end - origWords[0].start;
-      if (coveredSpan < origSpan * 0.4) {
+      if (coveredSpan < origSpan * 0.28) {
         validMonotonicWords = false;
       }
     }
 
     if (validMonotonicWords && orig) {
       const scale = (line.end - line.start) / origSpan;
-      const mappedWords: WordTiming[] = origWords.map((w, idx) => {
+      const minW = Math.min(0.03, ((line.end - line.start) / tokens.length) * 0.5);
+      const mappedWords: WordTiming[] = [];
+      for (let idx = 0; idx < origWords.length; idx++) {
+        const w = origWords[idx];
         const relS = (w.start - orig.start) * scale;
         const relE = (w.end - orig.start) * scale;
+        const prevStartFloor = idx > 0 ? mappedWords[idx - 1].start + minW : line.start;
+        const maxStart = line.end - (origWords.length - idx) * minW;
         const wStart = Number(
-          Math.max(line.start, Math.min(line.end - 0.04, line.start + relS)).toFixed(3)
+          Math.max(line.start, prevStartFloor, Math.min(maxStart, line.start + relS)).toFixed(3)
         );
+        const rawWEnd = Math.max(wStart + minW, Math.min(line.end, line.start + relE));
         const wEnd = Number(
-          Math.max(wStart + 0.04, Math.min(line.end, line.start + relE)).toFixed(3)
+          (idx === origWords.length - 1 ? Math.max(rawWEnd, line.end) : rawWEnd).toFixed(3)
         );
-        return {
+        mappedWords.push({
           ...w,
           id: w.id || `${line.id}_w${idx}`,
+          text: tokens[idx],
           start: wStart,
           end: wEnd,
-        };
-      });
+        });
+      }
       return { ...line, words: mappedWords };
     }
 
+    const snappedWords = snapWordTimingsToOnsets(
+      line.text,
+      line.start,
+      line.end,
+      onsets,
+      line.id,
+      envelope,
+      frameDurationSec
+    ).map((w, idx) => {
+      const prev = origWords[idx];
+      if (
+        prev &&
+        prev.text.toLowerCase() === w.text.toLowerCase() &&
+        (prev.confidence !== undefined || prev.uncertain)
+      ) {
+        return {
+          ...w,
+          ...(prev.confidence !== undefined ? { confidence: prev.confidence } : {}),
+          ...(prev.uncertain ? { uncertain: true } : {}),
+        };
+      }
+      return w;
+    });
+
     return {
       ...line,
-      words: snapWordTimingsToOnsets(
-        line.text,
-        line.start,
-        line.end,
-        onsets,
-        line.id,
-        envelope,
-        frameDurationSec
-      ),
+      words: snappedWords,
     };
   });
 }
@@ -1354,7 +1586,15 @@ export function refineWithAiTimestamps(
     }
 
     if (words.length === 0) {
-      words = snapWordTimingsToOnsets(line.text, start, end, onsets, line.id);
+      words = snapWordTimingsToOnsets(
+        line.text,
+        start,
+        end,
+        onsets,
+        line.id,
+        analysis?.envelope,
+        analysis?.frameDurationSec
+      );
     }
 
     return {
@@ -1367,7 +1607,7 @@ export function refineWithAiTimestamps(
     };
   });
 
-  // Interpolate any unmatched gap spans between matched anchors using syllable proportions
+  // Interpolate any unmatched gap spans between matched anchors using detected vocal phrases when available
   if (matched > 0 && matched < preliminary.length) {
     let i = 0;
     while (i < preliminary.length) {
@@ -1381,31 +1621,20 @@ export function refineWithAiTimestamps(
 
       const anchorStart = gapStartIdx > 0 ? preliminary[gapStartIdx - 1].end + 0.04 : 0;
       const anchorEnd =
-        i < preliminary.length ? Math.max(anchorStart + 0.4 * (gapEndIdx - gapStartIdx + 1), preliminary[i].start - 0.04) : safeDuration;
+        i < preliminary.length
+          ? Math.max(anchorStart + 0.4 * (gapEndIdx - gapStartIdx + 1), preliminary[i].start - 0.04)
+          : safeDuration;
       const span = Math.max(0.4 * (gapEndIdx - gapStartIdx + 1), anchorEnd - anchorStart);
 
-      const gapWeights: number[] = [];
-      for (let g = gapStartIdx; g <= gapEndIdx; g++) {
-        gapWeights.push(computeLineWeight(preliminary[g], preliminary[g + 1]));
-      }
-      const totalGapWeight = Math.max(1, gapWeights.reduce((a, b) => a + b, 0));
+      const gapSlice = preliminary.slice(gapStartIdx, gapEndIdx + 1).map(({ _matched: _, ...rest }) => rest);
+      const alignedGap = alignLinesToWindow(gapSlice, anchorStart, anchorStart + span, analysis);
 
-      let cursor = anchorStart;
       for (let g = gapStartIdx; g <= gapEndIdx; g++) {
-        const dur = (gapWeights[g - gapStartIdx] / totalGapWeight) * span;
-        const s = Number(Math.max(0, Math.min(safeDuration - 0.35, cursor)).toFixed(2));
-        const e = Number(Math.max(s + 0.35, Math.min(safeDuration, cursor + dur - 0.04)).toFixed(2));
-        preliminary[g].start = s;
-        preliminary[g].end = e;
+        const mapped = alignedGap[g - gapStartIdx];
+        preliminary[g].start = mapped.start;
+        preliminary[g].end = mapped.end;
         preliminary[g].confidence = 0.62;
-        preliminary[g].words = snapWordTimingsToOnsets(
-          preliminary[g].text,
-          s,
-          e,
-          onsets,
-          preliminary[g].id
-        );
-        cursor += dur;
+        preliminary[g].words = mapped.words;
       }
     }
   }
@@ -1424,7 +1653,7 @@ export function refineWithAiTimestamps(
   const confidence = Number(((matched / Math.max(1, lines.length)) * 0.92).toFixed(2));
   if (matched < lines.length) {
     warnings.push(
-      `AI vocal alignment matched ${matched} of ${lines.length} lines; remaining lines interpolated between anchors.`
+      `Vocal alignment matched ${matched} of ${lines.length} lines; remaining lines aligned to detected phrases.`
     );
   }
 
@@ -1439,6 +1668,222 @@ export function refineWithAiTimestamps(
       timestamp: Date.now(),
     },
   };
+}
+
+/**
+ * Aligns a sequence of lyric lines strictly inside [windowStart, windowEnd] using
+ * detected vocal phrases and spectral-flux onsets inside that window when available.
+ */
+export function alignLinesToWindow(
+  rawLines: LyricLine[],
+  windowStart: number,
+  windowEnd: number,
+  analysis?: AudioAnalysisResult | null
+): LyricLine[] {
+  if (rawLines.length === 0) return [];
+  const startBound = Math.max(0, Number.isFinite(windowStart) ? windowStart : 0);
+  const endBound = Math.max(startBound + 0.4 * rawLines.length, Number.isFinite(windowEnd) ? windowEnd : startBound + 30);
+  const span = Math.max(0.4 * rawLines.length, endBound - startBound);
+
+  if (analysis && analysis.phrases.length > 0 && analysis.frameDurationSec > 0) {
+    const subPhrases = analysis.phrases
+      .map((p) => ({
+        start: Math.max(startBound, p.start) - startBound,
+        end: Math.min(endBound, p.end) - startBound,
+        energy: p.energy,
+      }))
+      .filter((p) => p.end - p.start >= 0.35);
+
+    const subPhraseTime = subPhrases.reduce((s, p) => s + (p.end - p.start), 0);
+    if (subPhrases.length > 0 && subPhraseTime >= Math.max(0.8, rawLines.length * 0.45)) {
+      const fStart = Math.max(0, Math.floor(startBound / analysis.frameDurationSec));
+      const fEnd = Math.min(analysis.envelope.length, Math.ceil(endBound / analysis.frameDurationSec));
+      const localEnv = fEnd > fStart ? analysis.envelope.slice(fStart, fEnd) : [];
+      const localOnsets = analysis.onsets
+        .filter((o) => o >= startBound && o <= endBound)
+        .map((o) => Number((o - startBound).toFixed(3)));
+
+      const localAnalysis: AudioAnalysisResult = {
+        envelope: localEnv,
+        onsets: localOnsets,
+        waveformPeaks: [],
+        frameDurationSec: analysis.frameDurationSec,
+        totalDuration: span,
+        phrases: subPhrases,
+        dynamicRange: analysis.dynamicRange,
+      };
+
+      const alignedLocal = alignLyricsToAudio(rawLines, localAnalysis).lines;
+      const shifted = alignedLocal.map((l) => {
+        const s = Number(Math.max(startBound, Math.min(endBound - 0.35, l.start + startBound)).toFixed(2));
+        const e = Number(Math.max(s + 0.35, Math.min(endBound, l.end + startBound)).toFixed(2));
+        return {
+          ...l,
+          start: s,
+          end: e,
+          words: snapWordTimingsToOnsets(
+            l.text,
+            s,
+            e,
+            analysis.onsets,
+            l.id,
+            analysis.envelope,
+            analysis.frameDurationSec
+          ),
+        };
+      });
+      return resolveLineOverlaps(shifted, endBound);
+    }
+  }
+
+  // Fallback: syllable-weighted distribution within [startBound, endBound]
+  const localOnsets = (analysis?.onsets ?? [])
+    .filter((o) => o >= startBound && o <= endBound)
+    .map((o) => Number((o - startBound).toFixed(3)));
+  const distLocal = distributeLyricsProportionally(rawLines, span, localOnsets).lines;
+  const shifted = distLocal.map((l) => {
+    const s = Number(Math.max(startBound, Math.min(endBound - 0.35, l.start + startBound)).toFixed(2));
+    const e = Number(Math.max(s + 0.35, Math.min(endBound, l.end + startBound)).toFixed(2));
+    return {
+      ...l,
+      start: s,
+      end: e,
+      words: snapWordTimingsToOnsets(
+        l.text,
+        s,
+        e,
+        analysis?.onsets ?? [],
+        l.id,
+        analysis?.envelope,
+        analysis?.frameDurationSec
+      ),
+    };
+  });
+  return resolveLineOverlaps(shifted, endBound);
+}
+
+/**
+ * Fills remaining uncovered tail time of a long song (e.g., 2-9 min worship vamps/choruses)
+ * by mapping chorus/bridge cues directly onto detected vocal phrases in the tail of the track.
+ */
+export function fillRemainingSongCuesWithAnalysis(
+  existingLines: LyricLine[],
+  totalDuration: number,
+  analysis?: AudioAnalysisResult | null
+): LyricLine[] {
+  if (existingLines.length === 0) return [];
+  const safeDur =
+    Number.isFinite(totalDuration) && totalDuration > 1
+      ? totalDuration
+      : analysis?.totalDuration && analysis.totalDuration > 1
+        ? analysis.totalDuration
+        : existingLines[existingLines.length - 1].end;
+
+  const lastExistingEnd = existingLines[existingLines.length - 1].end;
+  if (lastExistingEnd >= safeDur - 8) {
+    return resolveLineOverlaps(existingLines, safeDur);
+  }
+
+  const chorusOrBridge = existingLines.filter(
+    (l) => l.section === 'chorus' || l.section === 'bridge'
+  );
+  const templatePool = chorusOrBridge.length > 0 ? chorusOrBridge : existingLines;
+  const tailStart = Math.min(safeDur - 4, lastExistingEnd + 0.8);
+  const tailEnd = Math.max(tailStart + 4, safeDur - 0.5);
+  const stamp = Date.now();
+
+  const tailPhrases = (analysis?.phrases ?? [])
+    .map((p) => ({
+      start: Math.max(tailStart, p.start),
+      end: Math.min(tailEnd, p.end),
+      energy: p.energy,
+    }))
+    .filter((p) => p.end - p.start >= 0.45);
+
+  const appended: LyricLine[] = [];
+
+  if (tailPhrases.length >= 2 && analysis) {
+    // Subdivide long continuous vamps/chorus swells (> 6.5s) into natural cue blocks
+    const cueWindows: Array<{ start: number; end: number }> = [];
+    for (const ph of tailPhrases) {
+      const dur = ph.end - ph.start;
+      if (dur <= 6.5) {
+        cueWindows.push({ start: ph.start, end: ph.end });
+      } else {
+        const subCount = Math.max(2, Math.round(dur / 4.2));
+        const subDur = dur / subCount;
+        for (let k = 0; k < subCount; k++) {
+          cueWindows.push({
+            start: ph.start + k * subDur,
+            end: ph.start + (k + 1) * subDur - (k < subCount - 1 ? 0.06 : 0),
+          });
+        }
+      }
+    }
+
+    cueWindows.forEach((win, idx) => {
+      const template = templatePool[idx % templatePool.length];
+      const id = `line_loop_${stamp}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      const s = Number(Math.max(tailStart, Math.min(tailEnd - 0.4, win.start)).toFixed(2));
+      const e = Number(Math.max(s + 0.4, Math.min(tailEnd, win.end)).toFixed(2));
+      appended.push({
+        id,
+        text: template.text,
+        section: template.section,
+        ...(template.vocalRole ? { vocalRole: template.vocalRole } : {}),
+        start: s,
+        end: e,
+        effect: template.effect,
+        effectOverride: false,
+        words: snapWordTimingsToOnsets(
+          template.text,
+          s,
+          e,
+          analysis.onsets,
+          id,
+          analysis.envelope,
+          analysis.frameDurationSec
+        ),
+      });
+    });
+
+    const refinedTail = refineSegmentsWithAcousticAnalysis(appended, analysis, safeDur);
+    return resolveLineOverlaps([...existingLines, ...refinedTail], safeDur);
+  }
+
+  // Fallback without phrase detections: natural paced cues starting right after lastExistingEnd
+  let cursor = tailStart;
+  let templateIdx = 0;
+  while (cursor < tailEnd - 2) {
+    const template = templatePool[templateIdx % templatePool.length];
+    const templateDur = Math.max(2.4, Math.min(5.5, template.end - template.start));
+    const start = Number(cursor.toFixed(2));
+    const end = Number(Math.min(tailEnd, start + templateDur).toFixed(2));
+    const id = `line_loop_${stamp}_${templateIdx}_${Math.random().toString(36).slice(2, 6)}`;
+    appended.push({
+      id,
+      text: template.text,
+      section: template.section,
+      ...(template.vocalRole ? { vocalRole: template.vocalRole } : {}),
+      start,
+      end: Math.max(start + 0.4, end),
+      effect: template.effect,
+      effectOverride: false,
+      words: snapWordTimingsToOnsets(
+        template.text,
+        start,
+        Math.max(start + 0.4, end),
+        analysis?.onsets ?? [],
+        id,
+        analysis?.envelope,
+        analysis?.frameDurationSec
+      ),
+    });
+    cursor = end + 1.2;
+    templateIdx++;
+  }
+
+  return resolveLineOverlaps([...existingLines, ...appended], safeDur);
 }
 
 export function encodeFloat32ToWavBlob(

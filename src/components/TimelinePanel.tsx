@@ -686,13 +686,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                 ))}
               </div>
 
-              {/* Lyrics Segments Track (Flat 2D Cyan clips) */}
+              {/* Lyrics Segments Track (Flat 2D Cyan clips; dual-lane split when vocals overlap) */}
               <div className="h-12 border-b border-[#273545] relative bg-[#0B141A]">
-                {lyrics.map((line) => {
+                {lyrics.map((line, lineIdx) => {
                   const left = line.start * pxPerSec;
                   const width = Math.max(20, (line.end - line.start) * pxPerSec);
                   const isSelected = line.id === selectedLineId;
                   const accent = SECTION_COLORS[line.section];
+                  const role = line.vocalRole ?? 'lead';
+                  const hasSimultaneousOverlap = lyrics.some(
+                    (other, otherIdx) =>
+                      otherIdx !== lineIdx &&
+                      Math.min(line.end, other.end) - Math.max(line.start, other.start) > 0.08
+                  );
+                  const isSecondaryOverlapLane = hasSimultaneousOverlap && role !== 'lead';
+                  const verticalBandClass = hasSimultaneousOverlap
+                    ? isSecondaryOverlapLane
+                      ? 'top-[25px] h-[20px]'
+                      : 'top-[2px] h-[21px]'
+                    : 'top-1.5 bottom-1.5';
 
                   return (
                     <div
@@ -708,10 +720,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                           startClientX: e.clientX,
                         });
                       }}
-                      className={`absolute top-1.5 bottom-1.5 rounded-[3px] overflow-hidden flex items-center cursor-grab active:cursor-grabbing border transition-colors ${
+                      className={`absolute ${verticalBandClass} rounded-[3px] overflow-hidden flex items-center cursor-grab active:cursor-grabbing border transition-colors ${
                         isSelected
-                          ? 'border-[#67E8F9] bg-[#0891B2]'
-                          : 'border-[#06B6D4]/75 bg-[#0E7490] hover:border-[#22D3EE] hover:bg-[#0891B2]/90'
+                          ? 'border-[#67E8F9] bg-[#0891B2] z-10'
+                          : isSecondaryOverlapLane
+                            ? 'border-[#38B6CC]/75 bg-[#0A4E61] hover:border-[#22D3EE] hover:bg-[#0E7490]'
+                            : 'border-[#06B6D4]/75 bg-[#0E7490] hover:border-[#22D3EE] hover:bg-[#0891B2]/90'
                       }`}
                       style={{ left: `${left}px`, width: `${width}px` }}
                     >

@@ -5,154 +5,92 @@ import {
   ProjectData,
   SectionType,
   TypographyStyle,
+  VocalLayersConfig,
+  WatermarkConfig,
 } from '../types/editor';
+
+export type FontCategory =
+  | 'Modern Sans Serif'
+  | 'Elegant Serif'
+  | 'Bold and Cinematic'
+  | 'Handwriting and Script'
+  | 'Minimalist'
+  | 'Decorative Typography';
+
+export const FONT_CATEGORIES: FontCategory[] = [
+  'Modern Sans Serif',
+  'Elegant Serif',
+  'Bold and Cinematic',
+  'Handwriting and Script',
+  'Minimalist',
+  'Decorative Typography',
+];
 
 export interface FontOption {
   family: string;
   label: string;
-  category: 'Gospel & Worship' | 'Contemporary' | 'Editorial' | 'Stage & Bold' | 'Script' | 'Cinematic';
+  category: FontCategory;
   weights: number[];
 }
 
 export const CURATED_FONTS: FontOption[] = [
-  {
-    family: 'Instrument Serif',
-    label: 'Instrument Serif',
-    category: 'Editorial',
-    weights: [400],
-  },
-  {
-    family: 'Syne',
-    label: 'Syne',
-    category: 'Contemporary',
-    weights: [500, 600, 700, 800],
-  },
-  {
-    family: 'Space Grotesk',
-    label: 'Space Grotesk',
-    category: 'Contemporary',
-    weights: [400, 500, 600, 700],
-  },
-  {
-    family: 'Italiana',
-    label: 'Italiana',
-    category: 'Gospel & Worship',
-    weights: [400],
-  },
-  {
-    family: 'Cormorant Garamond',
-    label: 'Cormorant Garamond',
-    category: 'Gospel & Worship',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Playfair Display',
-    label: 'Playfair Display',
-    category: 'Gospel & Worship',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Cinzel',
-    label: 'Cinzel',
-    category: 'Gospel & Worship',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Lora',
-    label: 'Lora',
-    category: 'Gospel & Worship',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Plus Jakarta Sans',
-    label: 'Plus Jakarta Sans',
-    category: 'Contemporary',
-    weights: [400, 500, 600, 700, 800],
-  },
-  {
-    family: 'Outfit',
-    label: 'Outfit',
-    category: 'Contemporary',
-    weights: [400, 500, 600, 700],
-  },
-  {
-    family: 'DM Sans',
-    label: 'DM Sans',
-    category: 'Contemporary',
-    weights: [400, 500, 600, 700],
-  },
-  {
-    family: 'Roboto',
-    label: 'Roboto',
-    category: 'Contemporary',
-    weights: [400, 500, 700],
-  },
-  {
-    family: 'Montserrat',
-    label: 'Montserrat',
-    category: 'Contemporary',
-    weights: [400, 500, 600, 700, 800],
-  },
-  {
-    family: 'IBM Plex Sans',
-    label: 'IBM Plex Sans',
-    category: 'Editorial',
-    weights: [400, 500, 600, 700],
-  },
-  {
-    family: 'Manrope',
-    label: 'Manrope',
-    category: 'Editorial',
-    weights: [400, 500, 600, 700],
-  },
-  {
-    family: 'Source Serif 4',
-    label: 'Source Serif 4',
-    category: 'Editorial',
-    weights: [400, 600, 700],
-  },
-  {
-    family: 'Oswald',
-    label: 'Oswald',
-    category: 'Stage & Bold',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Bebas Neue',
-    label: 'Bebas Neue',
-    category: 'Stage & Bold',
-    weights: [400],
-  },
-  {
-    family: 'Archivo',
-    label: 'Archivo',
-    category: 'Stage & Bold',
-    weights: [500, 600, 700],
-  },
-  {
-    family: 'Great Vibes',
-    label: 'Great Vibes (Script)',
-    category: 'Script',
-    weights: [400],
-  },
-  {
-    family: 'Cinzel Decorative',
-    label: 'Cinzel Decorative',
-    category: 'Cinematic',
-    weights: [700],
-  },
-  {
-    family: 'Cormorant Infant',
-    label: 'Cormorant Infant',
-    category: 'Editorial',
-    weights: [600],
-  },
-  {
-    family: 'Zilla Slab',
-    label: 'Zilla Slab',
-    category: 'Editorial',
-    weights: [600],
-  },
+  // Modern Sans Serif (8)
+  { family: 'Inter', label: 'Inter', category: 'Modern Sans Serif', weights: [400, 500, 600, 700, 800] },
+  { family: 'Roboto', label: 'Roboto', category: 'Modern Sans Serif', weights: [400, 500, 700] },
+  { family: 'Montserrat', label: 'Montserrat', category: 'Modern Sans Serif', weights: [400, 500, 600, 700, 800] },
+  { family: 'Poppins', label: 'Poppins', category: 'Modern Sans Serif', weights: [400, 500, 600, 700] },
+  { family: 'Open Sans', label: 'Open Sans', category: 'Modern Sans Serif', weights: [400, 500, 600, 700] },
+  { family: 'Lato', label: 'Lato', category: 'Modern Sans Serif', weights: [400, 700] },
+  { family: 'Plus Jakarta Sans', label: 'Plus Jakarta Sans', category: 'Modern Sans Serif', weights: [400, 500, 600, 700, 800] },
+  { family: 'DM Sans', label: 'DM Sans', category: 'Modern Sans Serif', weights: [400, 500, 600, 700] },
+
+  // Elegant Serif (8)
+  { family: 'Playfair Display', label: 'Playfair Display', category: 'Elegant Serif', weights: [500, 600, 700] },
+  { family: 'Cormorant Garamond', label: 'Cormorant Garamond', category: 'Elegant Serif', weights: [500, 600, 700] },
+  { family: 'Lora', label: 'Lora', category: 'Elegant Serif', weights: [500, 600, 700] },
+  { family: 'Instrument Serif', label: 'Instrument Serif', category: 'Elegant Serif', weights: [400] },
+  { family: 'Source Serif 4', label: 'Source Serif 4', category: 'Elegant Serif', weights: [400, 600, 700] },
+  { family: 'Cormorant Infant', label: 'Cormorant Infant', category: 'Elegant Serif', weights: [600] },
+  { family: 'EB Garamond', label: 'EB Garamond', category: 'Elegant Serif', weights: [400, 500, 600, 700] },
+  { family: 'Crimson Pro', label: 'Crimson Pro', category: 'Elegant Serif', weights: [400, 500, 600, 700] },
+
+  // Bold and Cinematic (8)
+  { family: 'Oswald', label: 'Oswald', category: 'Bold and Cinematic', weights: [500, 600, 700] },
+  { family: 'Bebas Neue', label: 'Bebas Neue', category: 'Bold and Cinematic', weights: [400] },
+  { family: 'Cinzel', label: 'Cinzel', category: 'Bold and Cinematic', weights: [500, 600, 700] },
+  { family: 'Archivo', label: 'Archivo', category: 'Bold and Cinematic', weights: [500, 600, 700] },
+  { family: 'Anton', label: 'Anton', category: 'Bold and Cinematic', weights: [400] },
+  { family: 'Archivo Black', label: 'Archivo Black', category: 'Bold and Cinematic', weights: [400] },
+  { family: 'Syne', label: 'Syne', category: 'Bold and Cinematic', weights: [500, 600, 700, 800] },
+  { family: 'Teko', label: 'Teko', category: 'Bold and Cinematic', weights: [500, 600, 700] },
+
+  // Handwriting and Script (10)
+  { family: 'Dancing Script', label: 'Dancing Script', category: 'Handwriting and Script', weights: [500, 600, 700] },
+  { family: 'Great Vibes', label: 'Great Vibes', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Allura', label: 'Allura', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Sacramento', label: 'Sacramento', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Caveat', label: 'Caveat', category: 'Handwriting and Script', weights: [500, 600, 700] },
+  { family: 'Pacifico', label: 'Pacifico', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Alex Brush', label: 'Alex Brush', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Satisfy', label: 'Satisfy', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Kaushan Script', label: 'Kaushan Script', category: 'Handwriting and Script', weights: [400] },
+  { family: 'Marck Script', label: 'Marck Script', category: 'Handwriting and Script', weights: [400] },
+
+  // Minimalist (6)
+  { family: 'Outfit', label: 'Outfit', category: 'Minimalist', weights: [400, 500, 600, 700] },
+  { family: 'Manrope', label: 'Manrope', category: 'Minimalist', weights: [400, 500, 600, 700] },
+  { family: 'Space Grotesk', label: 'Space Grotesk', category: 'Minimalist', weights: [400, 500, 600, 700] },
+  { family: 'IBM Plex Sans', label: 'IBM Plex Sans', category: 'Minimalist', weights: [400, 500, 600, 700] },
+  { family: 'Sora', label: 'Sora', category: 'Minimalist', weights: [400, 500, 600, 700] },
+  { family: 'Urbanist', label: 'Urbanist', category: 'Minimalist', weights: [400, 500, 600, 700] },
+
+  // Decorative Typography (6)
+  { family: 'Cinzel Decorative', label: 'Cinzel Decorative', category: 'Decorative Typography', weights: [700] },
+  { family: 'Italiana', label: 'Italiana', category: 'Decorative Typography', weights: [400] },
+  { family: 'Zilla Slab', label: 'Zilla Slab', category: 'Decorative Typography', weights: [600] },
+  { family: 'Abril Fatface', label: 'Abril Fatface', category: 'Decorative Typography', weights: [400] },
+  { family: 'Lobster', label: 'Lobster', category: 'Decorative Typography', weights: [400] },
+  { family: 'Righteous', label: 'Righteous', category: 'Decorative Typography', weights: [400] },
 ];
 
 export interface BackgroundTemplateItem {
@@ -629,6 +567,61 @@ export const DEFAULT_BACKGROUND: BackgroundConfig = {
   blur: 0,
 };
 
+export const DEFAULT_WATERMARK: WatermarkConfig = {
+  enabled: true,
+  text: 'Shululu Lyrics',
+  fontFamily: 'Caveat',
+  fontSize: 48,
+  color: '#F8FAFC',
+  strokeColor: '#090D14',
+  strokeWidth: 4,
+  position: 'bottom-center',
+  opacity: 0.94,
+};
+
+export const DEFAULT_VOCAL_LAYERS: VocalLayersConfig = {
+  leadVisible: true,
+  backing: {
+    visible: false,
+    color: '#CBD5E1',
+    fontScale: 0.72,
+    positionX: 0.5,
+    positionY: 0.62,
+  },
+  choirVisible: true,
+  choirColor: '#E2E8F0',
+  adlibVisible: true,
+  adlibColor: '#E5DEC9',
+};
+
+export interface LyricLanguageOption {
+  code: string;
+  label: string;
+}
+
+export const LYRIC_LANGUAGES: LyricLanguageOption[] = [
+  { code: 'auto', label: 'Auto-Detect (All Languages)' },
+  { code: 'sw', label: 'Swahili (Kiswahili)' },
+  { code: 'sn', label: 'Shona (ChiShona)' },
+  { code: 'en', label: 'English' },
+  { code: 'fr', label: 'French (Français)' },
+  { code: 'ln', label: 'Lingala' },
+  { code: 'yo', label: 'Yoruba (Èdè Yorùbá)' },
+  { code: 'zu', label: 'isiZulu' },
+  { code: 'xh', label: 'isiXhosa' },
+  { code: 'nd', label: 'isiNdebele' },
+  { code: 'lg', label: 'Luganda' },
+  { code: 'ny', label: 'Chichewa' },
+  { code: 'pt', label: 'Portuguese (Português)' },
+  { code: 'es', label: 'Spanish (Español)' },
+  { code: 'ar', label: 'Arabic (العربية)' },
+  { code: 'am', label: 'Amharic (አማርኛ)' },
+  { code: 'hi', label: 'Hindi (हिन्दी)' },
+  { code: 'ko', label: 'Korean (한국어)' },
+  { code: 'ja', label: 'Japanese (日本語)' },
+  { code: 'zh', label: 'Chinese (中文)' },
+];
+
 export function createNewProject(name = 'Untitled Project'): ProjectData {
   const now = Date.now();
   return {
@@ -638,6 +631,7 @@ export function createNewProject(name = 'Untitled Project'): ProjectData {
     updatedAt: now,
     aspectRatio: '16:9',
     duration: 0,
+    language: 'auto',
     audioFileName: null,
     audioMimeType: null,
     audioVolume: 1,
@@ -645,7 +639,12 @@ export function createNewProject(name = 'Untitled Project'): ProjectData {
     autoEffectsEnabled: true,
     autoEffectStyle: 'worship-serene',
     typography: { ...DEFAULT_TYPOGRAPHY },
+    vocalLayers: {
+      ...DEFAULT_VOCAL_LAYERS,
+      backing: { ...DEFAULT_VOCAL_LAYERS.backing },
+    },
     background: { ...DEFAULT_BACKGROUND },
+    watermark: { ...DEFAULT_WATERMARK },
     lyrics: [],
     syncReport: null,
   };

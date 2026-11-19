@@ -3,6 +3,8 @@ import {
   BACKGROUND_TEMPLATES,
   createNewProject,
   DEFAULT_TYPOGRAPHY,
+  DEFAULT_VOCAL_LAYERS,
+  DEFAULT_WATERMARK,
 } from './data/presets';
 import {
   AlbumStylePreset,
@@ -16,13 +18,19 @@ import {
   ProjectSummary,
   SectionType,
   TypographyStyle,
+  VocalLayersConfig,
+  VocalLayersPatch,
+  VocalRole,
+  WatermarkConfig,
 } from './types/editor';
 import {
+  alignLinesToWindow,
   alignLyricsToAudio,
   AudioAnalysisResult,
   computeAudioAnalysis,
   distributeLyricsProportionally,
   encodeFloat32ToWavBlob,
+  fillRemainingSongCuesWithAnalysis,
   refineSegmentsWithAcousticAnalysis,
   refineWithAiTimestamps,
   resolveLineOverlaps,
@@ -38,10 +46,14 @@ import {
 } from './utils/lyricsParser';
 import { extractId3LyricsFromBlob } from './utils/id3Lyrics';
 import {
+  alignWordsToCleanText,
   cleanLyricSegmentText,
-  isOverlappingDuplicateSegment,
+  filterVocalSegmentsForCleanPresentation,
+  formatLyricForVocalRole,
+  inferVocalRoleFromText,
   normalizeAudioMimeType,
   parseTranscriptToSegments,
+  resolveChunkOverlapSegment,
 } from './utils/transcriptionParser';
 import {
   deleteProjectFromDb,
@@ -1003,9 +1015,19 @@ export default function App() {
     type ServerSegment = {
       text: string;
       section?: string;
+      vocalRole?: VocalRole | string;
       start?: number;
       end?: number;
-      words?: Array<{ text: string; start: number; end: number }>;
+      confidence?: number;
+      uncertain?: boolean;
+      uncertainWords?: string[];
+      words?: Array<{
+        text: string;
+        start: number;
+        end: number;
+        confidence?: number;
+        uncertain?: boolean;
+      }>;
     };
 
     type TranscribeApiResponse = {
@@ -1020,7 +1042,8 @@ export default function App() {
 
     const convertSegmentsToLines = (
       rawSegs: ServerSegment[],
-      trackDuration: number
+      trackDuration: number,
+      deferAcousticWords = false
     ): LyricLine[] => {
       const stamp = Date.now();
       const cleanedSegs = rawSegs
@@ -1028,9 +1051,12 @@ export default function App() {
           if (typeof seg.text !== 'string') return null;
           const { text: cleanText, detectedSection } = cleanLyricSegmentText(seg.text);
           if (!cleanText) return null;
+          const role = inferVocalRoleFromText(cleanText, seg.vocalRole);
+          const formattedText = formatLyricForVocalRole(cleanText, role);
           return {
             ...seg,
-            cleanText,
+            cleanText: formattedText,
+            resolvedRole: role,
             resolvedSection:
               seg.section && seg.section.trim()
                 ? seg.section
@@ -1058,42 +1084,51 @@ export default function App() {
         const text = seg.cleanText;
         const section = normalizeSection(seg.resolvedSection);
 
-        const textWasModified = text !== seg.text.trim();
-        const validWords = !textWasModified && Array.isArray(seg.words)
-          ? seg.words
-              .filter((w) => typeof w.text === 'string' && w.text.trim().length > 0)
-              .map((w, wIdx) => {
-                const wStart = Number(
-                  Math.max(start, Math.min(end - 0.05, Number(w.start) || start)).toFixed(3)
-                );
-                const wEnd = Number(
-                  Math.max(wStart + 0.05, Math.min(end, Number(w.end) || end)).toFixed(3)
-                );
-                return {
-                  id: `${id}_w${wIdx}_${Math.random().toString(36).slice(2, 6)}`,
-                  text: w.text.trim(),
-                  start: wStart,
-                  end: wEnd,
-                };
-              })
+        const alignedWords = alignWordsToCleanText(
+          text,
+          seg.words,
+          start,
+          end,
+          seg.uncertainWords
+        );
+        const validWords = alignedWords
+          ? alignedWords.map((w, wIdx) => ({
+              id: `${id}_w${wIdx}_${Math.random().toString(36).slice(2, 6)}`,
+              text: w.text,
+              start: w.start,
+              end: w.end,
+              ...(w.confidence !== undefined ? { confidence: w.confidence } : {}),
+              ...(w.uncertain ? { uncertain: true } : {}),
+            }))
           : [];
+
+        const lineUncertain =
+          Boolean(seg.uncertain) ||
+          (typeof seg.confidence === 'number' && seg.confidence < 0.72) ||
+          validWords.some((w) => w.uncertain);
 
         return {
           id,
           text,
           section,
+          vocalRole: seg.resolvedRole,
           start,
           end,
           effect: 'fade' as EffectType,
           effectOverride: false,
+          ...(typeof seg.confidence === 'number' ? { confidence: seg.confidence } : {}),
+          ...(lineUncertain ? { uncertain: true } : {}),
           words:
             validWords.length > 0
               ? validWords
-              : buildWordTimings(text, start, end, id),
+              : deferAcousticWords
+                ? []
+                : buildWordTimings(text, start, end, id),
         };
       });
 
-      return resolveLineOverlaps(lines, trackDuration);
+      const filteredLines = filterVocalSegmentsForCleanPresentation(lines);
+      return resolveLineOverlaps(filteredLines, trackDuration);
     };
 
     const callTranscribeEndpoint = async (
@@ -1114,6 +1149,7 @@ export default function App() {
             audioBase64: base64,
             mimeType,
             duration: clipDuration,
+            language: project.language || 'auto',
           }),
         });
         if (!res.ok) {
@@ -1166,12 +1202,12 @@ export default function App() {
         abortedByQuota: boolean;
         lastFailureReason: string | null;
       }> => {
-        // Overlapping 85s chunks (5s overlap) at full 16kHz clarity prevent skipped words, dropped vocalizations,
-        // clock drift, and excessive API quota pressure across multi-minute songs.
-        const windowSec = 85;
+        // Overlapping 55s chunks (5s overlap) at 22.05kHz preserve crisp consonants (s/t/f/k)
+        // and keep per-chunk word-level JSON compact so short pickup words are never skipped.
+        const windowSec = 55;
         const overlapSec = 5;
         const stepSec = windowSec - overlapSec;
-        const targetRate = 16000;
+        const targetRate = 22050;
         const remainingDur = Math.max(1, trackDur - startOffsetSec);
         const totalParts = Math.max(1, Math.ceil(Math.max(1, remainingDur - overlapSec) / stepSec));
         const allSegs: ServerSegment[] = [...seedSegs];
@@ -1185,7 +1221,7 @@ export default function App() {
           offsetSec += stepSec, partIdx++
         ) {
           if (partIdx > 1) {
-            await new Promise((r) => window.setTimeout(r, 450));
+            await new Promise((r) => window.setTimeout(r, 1100));
           }
           setSyncStatusText(
             `Transcribing vocals (${Math.min(partIdx, totalParts)} of ${totalParts})...`
@@ -1204,13 +1240,12 @@ export default function App() {
           const chunkWav = encodeFloat32ToWavBlob(slice, targetRate);
 
           let data: TranscribeApiResponse = { available: false };
-          for (let attempt = 1; attempt <= 2; attempt++) {
+          for (let attempt = 1; attempt <= 3; attempt++) {
             try {
               data = await callTranscribeEndpoint(chunkWav, 'audio/wav', clipDur);
               if (
                 data.available ||
                 data.errorCode === 'MISSING_API_KEY' ||
-                data.errorCode === 'QUOTA_EXHAUSTED' ||
                 data.errorCode === 'POLICY_BLOCKED'
               ) {
                 break;
@@ -1224,8 +1259,9 @@ export default function App() {
                     : 'Chunk request timed out.',
               };
             }
-            if (attempt < 2) {
-              await new Promise((r) => window.setTimeout(r, 1500));
+            if (attempt < 3) {
+              const backoffMs = data.errorCode === 'QUOTA_EXHAUSTED' ? 3500 * attempt : 1600 * attempt;
+              await new Promise((r) => window.setTimeout(r, backoffMs));
             }
           }
 
@@ -1255,61 +1291,121 @@ export default function App() {
           let segs = Array.isArray(data.segments)
             ? data.segments.filter((s) => typeof s.text === 'string' && s.text.trim().length > 0)
             : [];
+          let chunkNeedsAcousticAlign = data.timingSource === 'estimated';
           if (segs.length === 0 && data.rawText && data.rawText.trim().length > 0) {
             segs = parseTranscriptToSegments(data.rawText, clipDur);
+            chunkNeedsAcousticAlign = true;
+          }
+          if (segs.length > 0 && segs.every((s) => !Number.isFinite(s.start))) {
+            chunkNeedsAcousticAlign = true;
           }
 
-          for (const s of segs) {
+          // When a chunk lacks precise timestamps, anchor its lines to real vocal phrases inside [offsetSec, offsetSec + clipDur]
+          if (segs.length > 0 && chunkNeedsAcousticAlign && analysis) {
+            const tempLines: LyricLine[] = segs.map((s, idx) => ({
+              id: `chunk_${partIdx}_${idx}`,
+              text: cleanLyricSegmentText(s.text).text || s.text,
+              section: normalizeSection(s.section),
+              start: offsetSec,
+              end: offsetSec + clipDur,
+              effect: 'fade',
+              effectOverride: false,
+              words: [],
+            }));
+            const alignedChunk = alignLinesToWindow(
+              tempLines,
+              offsetSec,
+              Math.min(trackDur, offsetSec + clipDur),
+              analysis
+            );
+            segs = alignedChunk.map((l) => ({
+              text: l.text,
+              section: l.section,
+              start: Number((l.start - offsetSec).toFixed(2)),
+              end: Number((l.end - offsetSec).toFixed(2)),
+              words: l.words.map((w) => ({
+                text: w.text,
+                start: Number((w.start - offsetSec).toFixed(3)),
+                end: Number((w.end - offsetSec).toFixed(3)),
+              })),
+            }));
+          }
+
+          for (let sIdx = 0; sIdx < segs.length; sIdx++) {
+            const s = segs[sIdx];
             const { text: cleanText, detectedSection } = cleanLyricSegmentText(s.text);
             if (!cleanText) continue;
 
-            const absStart = Number.isFinite(s.start)
-              ? (s.start as number) + offsetSec
-              : undefined;
-            const absEnd = Number.isFinite(s.end)
-              ? (s.end as number) + offsetSec
+            const chunkFallbackSlot = clipDur / Math.max(1, segs.length);
+            const relStart = Number.isFinite(s.start)
+              ? Math.max(0, Math.min(clipDur - 0.35, s.start as number))
+              : sIdx * chunkFallbackSlot;
+            const relEnd = Number.isFinite(s.end)
+              ? Math.max(relStart + 0.35, Math.min(clipDur, s.end as number))
+              : Math.min(clipDur, relStart + Math.max(1.2, chunkFallbackSlot - 0.1));
+
+            const absStart = Number((relStart + offsetSec).toFixed(2));
+            const absEnd = Number(Math.min(trackDur, relEnd + offsetSec).toFixed(2));
+            const resolvedRole = inferVocalRoleFromText(cleanText, s.vocalRole);
+            const formattedText = formatLyricForVocalRole(cleanText, resolvedRole);
+            const alignedRelWords = alignWordsToCleanText(
+              formattedText,
+              s.words,
+              relStart,
+              relEnd,
+              s.uncertainWords
+            );
+            const absWords = alignedRelWords
+              ? alignedRelWords.map((w) => ({
+                  text: w.text,
+                  start: Number((w.start + offsetSec).toFixed(3)),
+                  end: Number(Math.min(trackDur, w.end + offsetSec).toFixed(3)),
+                  ...(w.confidence !== undefined ? { confidence: w.confidence } : {}),
+                  ...(w.uncertain ? { uncertain: true } : {}),
+                }))
               : undefined;
 
-            if (
-              offsetSec > startOffsetSec &&
-              isOverlappingDuplicateSegment(
-                allSegs,
-                { text: cleanText, start: absStart },
-                offsetSec + overlapSec + 1.5
-              )
-            ) {
-              continue;
-            }
-            if (
-              startOffsetSec > 0 &&
-              offsetSec === startOffsetSec &&
-              isOverlappingDuplicateSegment(
-                allSegs,
-                { text: cleanText, start: absStart },
-                startOffsetSec + 6
-              )
-            ) {
-              continue;
-            }
-
-            allSegs.push({
+            const nextSegment: ServerSegment = {
               ...s,
-              text: cleanText,
+              text: formattedText,
+              vocalRole: resolvedRole,
               section:
                 s.section && s.section.trim()
                   ? s.section
                   : detectedSection || 'verse',
               start: absStart,
               end: absEnd,
-              words:
-                cleanText === s.text.trim() && Array.isArray(s.words)
-                  ? s.words.map((w) => ({
-                      ...w,
-                      start: (Number(w.start) || 0) + offsetSec,
-                      end: (Number(w.end) || 0) + offsetSec,
-                    }))
-                  : undefined,
-            });
+              words: absWords,
+            };
+
+            if (offsetSec > startOffsetSec || startOffsetSec > 0) {
+              const overlapCutoff =
+                offsetSec > startOffsetSec ? offsetSec + overlapSec + 1.5 : startOffsetSec + 6;
+              const decision = resolveChunkOverlapSegment(
+                allSegs.map((seg) => ({
+                  text: seg.text,
+                  start: seg.start,
+                  end: seg.end,
+                  vocalRole: inferVocalRoleFromText(seg.text, seg.vocalRole),
+                })),
+                {
+                  text: formattedText,
+                  start: absStart,
+                  end: absEnd,
+                  vocalRole: resolvedRole,
+                },
+                overlapCutoff
+              );
+              if (decision.action === 'skip') {
+                continue;
+              }
+              if (decision.action === 'replace' && decision.replaceIndex !== undefined) {
+                allSegs[decision.replaceIndex] = nextSegment;
+                continue;
+              }
+            }
+
+            allSegs.push(nextSegment);
           }
 
           if (offsetSec + windowSec >= trackDur) break;
@@ -1333,9 +1429,9 @@ export default function App() {
             'audio/webm',
             'audio/wav',
           ]);
-          // Keep single-pass transcription under 85s and transcribe from decoded 16kHz PCM WAV whenever available
-          // to eliminate VBR container encoder delay between AI timestamps and browser WebAudio playback.
-          const SINGLE_PASS_MAX_SEC = 85;
+          // Keep single-pass transcription under 55s and transcribe from decoded 22.05kHz PCM WAV whenever available
+          // for crisp consonant word clarity and zero VBR container encoder delay.
+          const SINGLE_PASS_MAX_SEC = 55;
           const directCompressedOk =
             !audioBuffer &&
             Boolean(audioBlob) &&
@@ -1359,7 +1455,7 @@ export default function App() {
             if (segs.every((s) => !Number.isFinite(s.start))) {
               needsAcousticTiming = true;
             }
-            const lines = convertSegmentsToLines(segs, clipDuration);
+            const lines = convertSegmentsToLines(segs, clipDuration, Boolean(analysis));
             if (lines.length === 0) return [];
             if (needsAcousticTiming && clipDuration === trackDuration) {
               return analysis
@@ -1367,7 +1463,9 @@ export default function App() {
                 : distributeLyricsProportionally(lines, clipDuration, []).lines;
             }
             return analysis
-              ? refineSegmentsWithAcousticAnalysis(lines, analysis, clipDuration)
+              ? refineSegmentsWithAcousticAnalysis(lines, analysis, clipDuration, {
+                  preserveAiAnchors: true,
+                })
               : lines;
           };
 
@@ -1402,9 +1500,11 @@ export default function App() {
               seedSegs
             );
             if (tailRes.segs.length <= seedSegs.length) return initialLines;
-            const rawConverted = convertSegmentsToLines(tailRes.segs, trackDuration);
+            const rawConverted = convertSegmentsToLines(tailRes.segs, trackDuration, Boolean(analysis));
             return analysis
-              ? refineSegmentsWithAcousticAnalysis(rawConverted, analysis, trackDuration)
+              ? refineSegmentsWithAcousticAnalysis(rawConverted, analysis, trackDuration, {
+                  preserveAiAnchors: true,
+                })
               : rawConverted;
           };
 
@@ -1429,8 +1529,8 @@ export default function App() {
           } else if (audioBuffer) {
             const mono = mixDownToMono(audioBuffer);
             if (trackDuration <= SINGLE_PASS_MAX_SEC) {
-              const resampled = downsampleMono(mono, audioBuffer.sampleRate, 16000);
-              const wavBlob = encodeFloat32ToWavBlob(resampled, 16000);
+              const resampled = downsampleMono(mono, audioBuffer.sampleRate, 22050);
+              const wavBlob = encodeFloat32ToWavBlob(resampled, 22050);
               const data = await callTranscribeEndpoint(
                 wavBlob,
                 'audio/wav',
@@ -1459,9 +1559,11 @@ export default function App() {
                 serverFailureReason = chunked.lastFailureReason;
               }
               if (!chunked.abortedByMissingKey && chunked.segs.length > 0) {
-                const rawConverted = convertSegmentsToLines(chunked.segs, trackDuration);
+                const rawConverted = convertSegmentsToLines(chunked.segs, trackDuration, Boolean(analysis));
                 createdLines = analysis
-                  ? refineSegmentsWithAcousticAnalysis(rawConverted, analysis, trackDuration)
+                  ? refineSegmentsWithAcousticAnalysis(rawConverted, analysis, trackDuration, {
+                      preserveAiAnchors: true,
+                    })
                   : rawConverted;
                 sourceMethod = 'ai';
               } else if (!serverFailureReason && chunked.segs.length === 0) {
@@ -1546,7 +1648,7 @@ export default function App() {
         const errMsg = serverFailureReason
           ? serverFailureReason
           : !navigator.onLine
-            ? 'Offline mode: connect to the internet for Auto-Create transcription, or paste/import lyrics manually.'
+            ? 'Offline mode: connect to the internet for Auto Transcribe, or paste/import lyrics manually.'
             : 'Could not generate lyrics from this audio track. Paste lyrics, import a .txt/.lrc file, or create timed cue slots.';
         setSyncError(errMsg);
         setMobilePane('lyrics');
@@ -1572,6 +1674,7 @@ export default function App() {
     project.audioFileName,
     project.audioMimeType,
     project.duration,
+    project.language,
     project.autoEffectsEnabled,
     project.autoEffectStyle,
     showToast,
@@ -1591,10 +1694,14 @@ export default function App() {
         project.lyrics.length > 0
       ) {
         nextLines = project.lyrics.map((existing, idx) => {
-          const merged = {
+          const parsedLine = parsed.lines[idx];
+          const nextRole = parsedLine.vocalRole ?? existing.vocalRole ?? 'lead';
+          const merged: LyricLine = {
             ...existing,
-            text: parsed.lines[idx].text,
-            section: parsed.lines[idx].section,
+            text: parsedLine.text,
+            section: parsedLine.section,
+            vocalRole: nextRole,
+            uncertain: false,
           };
           return audioAnalysis
             ? {
@@ -1680,71 +1787,247 @@ export default function App() {
 
         if (navigator.onLine) {
           setSyncStatusText('Aligning vocal phrases...');
-          const controller = new AbortController();
-          const fetchTimer = window.setTimeout(() => controller.abort(), 180_000);
           try {
             const mono = mixDownToMono(audioBuffer);
-            const targetSyncRate = audioBuffer.duration <= 240 ? 16000 : 10000;
-            const downsampled = downsampleMono(mono, audioBuffer.sampleRate, targetSyncRate);
-            const wavSync = encodeFloat32ToWavBlob(downsampled, targetSyncRate);
-            if (wavSync.size <= 16 * 1024 * 1024) {
-              const base64 = await blobToBase64(wavSync);
-              const res = await fetch('/api/sync-lyrics', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: controller.signal,
-                body: JSON.stringify({
-                  audioBase64: base64,
-                  mimeType: 'audio/wav',
-                  duration: audioBuffer.duration,
-                  lines: project.lyrics.map((l, idx) => ({ index: idx, text: l.text })),
-                }),
-              });
-              if (res.ok) {
-                const aiData = (await res.json()) as {
-                  available: boolean;
-                  vocalsDetected?: boolean;
-                  notes?: string[];
-                  segments?: Array<{
-                    lineIndex: number;
-                    start: number;
-                    end: number;
-                    words?: Array<{ text: string; start: number; end: number }>;
-                  }>;
-                };
-                if (
-                  aiData.available &&
-                  aiData.vocalsDetected &&
-                  Array.isArray(aiData.segments) &&
-                  aiData.segments.length > 0
-                ) {
-                  syncedResult = refineWithAiTimestamps(
-                    project.lyrics,
-                    aiData.segments,
-                    analysis.onsets,
-                    audioBuffer.duration,
-                    aiData.notes ?? [],
-                    analysis
-                  );
-                } else if (aiData.available && aiData.vocalsDetected === false) {
-                  syncedResult = {
-                    ...syncedResult,
-                    report: {
-                      ...syncedResult.report,
-                      confidence: Math.min(syncedResult.report.confidence, 0.48),
-                      warnings: [
-                        ...(aiData.notes ?? []),
-                        ...syncedResult.report.warnings,
-                      ].slice(0, 2),
-                    },
-                  };
+            const trackDur = audioBuffer.duration;
+            const targetSyncRate = 16000;
+
+            if (trackDur <= 135) {
+              const controller = new AbortController();
+              const fetchTimer = window.setTimeout(() => controller.abort(), 120_000);
+              try {
+                const downsampled = downsampleMono(mono, audioBuffer.sampleRate, targetSyncRate);
+                const wavSync = encodeFloat32ToWavBlob(downsampled, targetSyncRate);
+                if (wavSync.size <= 16 * 1024 * 1024) {
+                  const base64 = await blobToBase64(wavSync);
+                  const res = await fetch('/api/sync-lyrics', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                      audioBase64: base64,
+                      mimeType: 'audio/wav',
+                      duration: trackDur,
+                      language: project.language || 'auto',
+                      lines: project.lyrics.map((l, idx) => ({ index: idx, text: l.text })),
+                    }),
+                  });
+                  if (res.ok) {
+                    const aiData = (await res.json()) as {
+                      available: boolean;
+                      vocalsDetected?: boolean;
+                      notes?: string[];
+                      segments?: Array<{
+                        lineIndex: number;
+                        start: number;
+                        end: number;
+                        words?: Array<{ text: string; start: number; end: number }>;
+                      }>;
+                    };
+                    if (
+                      aiData.available &&
+                      aiData.vocalsDetected &&
+                      Array.isArray(aiData.segments) &&
+                      aiData.segments.length > 0
+                    ) {
+                      syncedResult = refineWithAiTimestamps(
+                        project.lyrics,
+                        aiData.segments,
+                        analysis.onsets,
+                        trackDur,
+                        aiData.notes ?? [],
+                        analysis
+                      );
+                    } else if (aiData.available && aiData.vocalsDetected === false) {
+                      syncedResult = {
+                        ...syncedResult,
+                        report: {
+                          ...syncedResult.report,
+                          confidence: Math.min(syncedResult.report.confidence, 0.48),
+                          warnings: [
+                            ...(aiData.notes ?? []),
+                            ...syncedResult.report.warnings,
+                          ].slice(0, 2),
+                        },
+                      };
+                    }
+                  }
                 }
+              } finally {
+                window.clearTimeout(fetchTimer);
+              }
+            } else {
+              // Windowed forced alignment for 2-10+ minute tracks prevents mid/late-song timing drift
+              const winSec = 110;
+              const overlapSec = 20;
+              const stepSec = winSec - overlapSec;
+              const totalParts = Math.max(1, Math.ceil(Math.max(1, trackDur - overlapSec) / stepSec));
+              const seedEstimates = syncedResult.lines;
+              const matchedBest = new Map<
+                number,
+                {
+                  lineIndex: number;
+                  start: number;
+                  end: number;
+                  centerDist: number;
+                  words?: Array<{ text: string; start: number; end: number }>;
+                }
+              >();
+              const notesCollected: string[] = [];
+
+              for (
+                let winStart = 0, partIdx = 1;
+                winStart < trackDur - 0.5;
+                winStart += stepSec, partIdx++
+              ) {
+                if (partIdx > 1) {
+                  await new Promise((r) => window.setTimeout(r, 900));
+                }
+                setSyncStatusText(
+                  `Aligning vocal phrases (${Math.min(partIdx, totalParts)} of ${totalParts})...`
+                );
+
+                const sSample = Math.floor(winStart * audioBuffer.sampleRate);
+                const eSample = Math.min(
+                  mono.length,
+                  Math.floor((winStart + winSec) * audioBuffer.sampleRate)
+                );
+                const clipDur = Math.max(1, (eSample - sSample) / audioBuffer.sampleRate);
+                const winEnd = winStart + clipDur;
+
+                // Select candidate lines likely falling within [winStart - 45, winEnd + 45]
+                let candidateIndices: number[] = [];
+                seedEstimates.forEach((est, idx) => {
+                  if (est.end >= winStart - 45 && est.start <= winEnd + 45) {
+                    candidateIndices.push(idx);
+                  }
+                });
+                if (candidateIndices.length === 0) {
+                  const midProgress = (winStart + clipDur * 0.5) / Math.max(1, trackDur);
+                  const approxCenterIdx = Math.round(midProgress * (project.lyrics.length - 1));
+                  const lo = Math.max(0, approxCenterIdx - 8);
+                  const hi = Math.min(project.lyrics.length - 1, approxCenterIdx + 8);
+                  for (let k = lo; k <= hi; k++) candidateIndices.push(k);
+                } else {
+                  const first = Math.max(0, candidateIndices[0] - 2);
+                  const last = Math.min(
+                    project.lyrics.length - 1,
+                    candidateIndices[candidateIndices.length - 1] + 2
+                  );
+                  candidateIndices = [];
+                  for (let k = first; k <= last; k++) candidateIndices.push(k);
+                }
+
+                const slice = downsampleMono(
+                  mono.subarray(sSample, eSample),
+                  audioBuffer.sampleRate,
+                  targetSyncRate
+                );
+                const wavChunk = encodeFloat32ToWavBlob(slice, targetSyncRate);
+                const base64 = await blobToBase64(wavChunk);
+
+                const controller = new AbortController();
+                const fetchTimer = window.setTimeout(() => controller.abort(), 95_000);
+                try {
+                  const res = await fetch('/api/sync-lyrics', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                      audioBase64: base64,
+                      mimeType: 'audio/wav',
+                      duration: clipDur,
+                      language: project.language || 'auto',
+                      isWindowedClip: true,
+                      clipStartSec: winStart,
+                      lines: candidateIndices.map((idx) => ({
+                        index: idx,
+                        text: project.lyrics[idx].text,
+                      })),
+                    }),
+                  });
+                  if (res.ok) {
+                    const aiData = (await res.json()) as {
+                      available: boolean;
+                      errorCode?: string;
+                      vocalsDetected?: boolean;
+                      notes?: string[];
+                      segments?: Array<{
+                        lineIndex: number;
+                        start: number;
+                        end: number;
+                        words?: Array<{ text: string; start: number; end: number }>;
+                      }>;
+                    };
+                    if (aiData.errorCode === 'MISSING_API_KEY') break;
+                    if (Array.isArray(aiData.notes)) {
+                      for (const n of aiData.notes) {
+                        if (notesCollected.length < 3 && !notesCollected.includes(n)) {
+                          notesCollected.push(n);
+                        }
+                      }
+                    }
+                    if (aiData.available && Array.isArray(aiData.segments)) {
+                      const clipCenter = clipDur * 0.5;
+                      for (const seg of aiData.segments) {
+                        if (!Number.isInteger(seg.lineIndex)) continue;
+                        if (seg.lineIndex < 0 || seg.lineIndex >= project.lyrics.length) continue;
+                        const absStart = Number(Math.max(0, Math.min(trackDur - 0.35, seg.start + winStart)).toFixed(2));
+                        const absEnd = Number(Math.max(absStart + 0.35, Math.min(trackDur, seg.end + winStart)).toFixed(2));
+                        const centerDist = Math.abs((seg.start + seg.end) * 0.5 - clipCenter);
+                        const existing = matchedBest.get(seg.lineIndex);
+                        if (!existing || centerDist < existing.centerDist) {
+                          matchedBest.set(seg.lineIndex, {
+                            lineIndex: seg.lineIndex,
+                            start: absStart,
+                            end: absEnd,
+                            centerDist,
+                            words: Array.isArray(seg.words)
+                              ? seg.words.map((w) => ({
+                                  text: w.text,
+                                  start: Number((Number(w.start) + winStart).toFixed(3)),
+                                  end: Number((Number(w.end) + winStart).toFixed(3)),
+                                }))
+                              : undefined,
+                          });
+                        }
+                      }
+                    }
+                  }
+                } catch {
+                  // Continue remaining windows even if one chunk failed
+                } finally {
+                  window.clearTimeout(fetchTimer);
+                }
+                if (winStart + winSec >= trackDur) break;
+              }
+
+              if (matchedBest.size > 0) {
+                const orderedSegments = Array.from(matchedBest.values())
+                  .sort((a, b) => a.lineIndex - b.lineIndex)
+                  .map(({ lineIndex, start, end, words }) => ({ lineIndex, start, end, words }));
+
+                // Drop any outlier segment that jumps backwards relative to an earlier matched line
+                const monotonicSegments: typeof orderedSegments = [];
+                for (const seg of orderedSegments) {
+                  const prev = monotonicSegments[monotonicSegments.length - 1];
+                  if (!prev || seg.start >= prev.start - 0.25) {
+                    monotonicSegments.push(seg);
+                  }
+                }
+
+                syncedResult = refineWithAiTimestamps(
+                  project.lyrics,
+                  monotonicSegments,
+                  analysis.onsets,
+                  trackDur,
+                  notesCollected,
+                  analysis
+                );
               }
             }
           } catch {
             // Local acoustic or proportional alignment already computed safely
-          } finally {
-            window.clearTimeout(fetchTimer);
           }
         }
       }
@@ -1788,11 +2071,19 @@ export default function App() {
     analyzeAudioBuffer,
     project.audioFileName,
     project.duration,
+    project.language,
     project.lyrics,
     project.autoEffectsEnabled,
     project.autoEffectStyle,
     showToast,
   ]);
+
+  const handleChangeLanguage = useCallback((language: string) => {
+    setProject((prev) => ({
+      ...prev,
+      language,
+    }));
+  }, []);
 
   // Line editing handlers
   const handleAddLine = useCallback(() => {
@@ -1830,22 +2121,53 @@ export default function App() {
         ...prev,
         lyrics: prev.lyrics.map((l) => {
           if (l.id !== id) return l;
-          const merged = { ...l, ...patch };
-          if (patch.text !== undefined || patch.start !== undefined || patch.end !== undefined) {
-            return audioAnalysis
-              ? {
-                  ...merged,
-                  words: snapWordTimingsToOnsets(
-                    merged.text,
-                    merged.start,
-                    merged.end,
-                    audioAnalysis.onsets,
-                    merged.id,
-                    audioAnalysis.envelope,
-                    audioAnalysis.frameDurationSec
-                  ),
-                }
-              : redistributeWordTimings(merged);
+          const nextPatch: Partial<LyricLine> = { ...patch };
+          // Keep lyrics clean without outer parentheses across vocal roles
+          if (nextPatch.vocalRole !== undefined && nextPatch.text === undefined) {
+            nextPatch.text = formatLyricForVocalRole(l.text, nextPatch.vocalRole);
+          }
+          if (nextPatch.text !== undefined && nextPatch.uncertain === undefined) {
+            nextPatch.uncertain = false;
+          }
+          const merged = { ...l, ...nextPatch };
+          if (
+            nextPatch.text !== undefined ||
+            nextPatch.start !== undefined ||
+            nextPatch.end !== undefined
+          ) {
+            const rebuiltWords = audioAnalysis
+              ? snapWordTimingsToOnsets(
+                  merged.text,
+                  merged.start,
+                  merged.end,
+                  audioAnalysis.onsets,
+                  merged.id,
+                  audioAnalysis.envelope,
+                  audioAnalysis.frameDurationSec
+                )
+              : redistributeWordTimings(merged).words;
+            const prevWords = l.words ?? [];
+            const wordsWithMeta =
+              nextPatch.text === undefined
+                ? rebuiltWords.map((w, idx) => {
+                    const prevW = prevWords[idx];
+                    if (
+                      prevW &&
+                      (prevW.confidence !== undefined || prevW.uncertain)
+                    ) {
+                      return {
+                        ...w,
+                        ...(prevW.confidence !== undefined ? { confidence: prevW.confidence } : {}),
+                        ...(prevW.uncertain ? { uncertain: true } : {}),
+                      };
+                    }
+                    return w;
+                  })
+                : rebuiltWords;
+            return {
+              ...merged,
+              words: wordsWithMeta,
+            };
           }
           return merged;
         }),
@@ -1861,13 +2183,15 @@ export default function App() {
         lyrics: prev.lyrics.map((l) => {
           if (l.id !== lineId) return l;
           const nextWords = l.words.map((w) =>
-            w.id === wordId ? { ...w, text: newText } : w
+            w.id === wordId ? { ...w, text: newText, uncertain: false, confidence: 1 } : w
           );
           const nextLineText = nextWords.map((w) => w.text.trim()).filter(Boolean).join(' ');
+          const stillUncertain = nextWords.some((w) => w.uncertain);
           return {
             ...l,
             words: nextWords,
             text: nextLineText,
+            uncertain: stillUncertain,
           };
         }),
       }));
@@ -1920,7 +2244,7 @@ export default function App() {
     [project.duration, project.lyrics.length, showToast]
   );
 
-  // Typography & Background handlers
+  // Typography, Vocal Layers & Background handlers
   const handleChangeTypography = useCallback((patch: Partial<TypographyStyle>) => {
     setProject((prev) => ({
       ...prev,
@@ -1928,12 +2252,148 @@ export default function App() {
     }));
   }, []);
 
+  const handleChangeVocalLayers = useCallback(
+    (patch: VocalLayersPatch) => {
+      setProject((prev) => {
+        const current = prev.vocalLayers ?? DEFAULT_VOCAL_LAYERS;
+        return {
+          ...prev,
+          vocalLayers: {
+            ...DEFAULT_VOCAL_LAYERS,
+            ...current,
+            ...patch,
+            backing: {
+              ...DEFAULT_VOCAL_LAYERS.backing,
+              ...(current.backing ?? {}),
+              ...(patch.backing ?? {}),
+            },
+          },
+        };
+      });
+    },
+    []
+  );
+
   const handleChangeBackground = useCallback((patch: Partial<BackgroundConfig>) => {
     setProject((prev) => ({
       ...prev,
       background: { ...prev.background, ...patch },
     }));
   }, []);
+
+  const handleChangeWatermark = useCallback((patch: Partial<WatermarkConfig>) => {
+    setProject((prev) => ({
+      ...prev,
+      watermark: { ...DEFAULT_WATERMARK, ...(prev.watermark ?? {}), ...patch },
+    }));
+  }, []);
+
+  const handleFillLongSongCues = useCallback(async () => {
+    if (project.lyrics.length === 0) return;
+    const trackDur = audioBuffer
+      ? audioBuffer.duration
+      : project.duration > 0
+        ? project.duration
+        : 300;
+    if (trackDur <= 150) return;
+
+    const analysis = audioBuffer
+      ? audioAnalysis ?? (await analyzeAudioBuffer(audioBuffer))
+      : audioAnalysis;
+    if (analysis && !audioAnalysis) {
+      setAudioAnalysis(analysis);
+    }
+
+    const filledLines = fillRemainingSongCuesWithAnalysis(project.lyrics, trackDur, analysis);
+    const finalLines = project.autoEffectsEnabled
+      ? assignAutoEffects(filledLines, project.autoEffectStyle, true)
+      : filledLines;
+
+    setProject((prev) => ({
+      ...prev,
+      lyrics: finalLines,
+      updatedAt: Date.now(),
+    }));
+    showToast('Filled remaining song timeline aligned to vocal phrases.');
+  }, [
+    analyzeAudioBuffer,
+    audioAnalysis,
+    audioBuffer,
+    project.autoEffectStyle,
+    project.autoEffectsEnabled,
+    project.duration,
+    project.lyrics,
+    showToast,
+  ]);
+
+  const handleCreateWorshipTemplate = useCallback(async () => {
+    const trackDuration = audioBuffer
+      ? audioBuffer.duration
+      : project.duration > 0
+        ? project.duration
+        : 300;
+    const analysis = audioBuffer
+      ? audioAnalysis ?? (await analyzeAudioBuffer(audioBuffer))
+      : audioAnalysis;
+    if (analysis && !audioAnalysis) {
+      setAudioAnalysis(analysis);
+    }
+
+    const stamp = Date.now();
+    const templateTexts = [
+      { text: "You are here, moving in our midst", section: "verse" },
+      { text: "I worship You, I worship You", section: "verse" },
+      { text: "You are here, working in this place", section: "verse" },
+      { text: "I worship You, I worship You", section: "verse" },
+      { text: "Jireh, You are enough", section: "chorus" },
+      { text: "Jireh, You are enough", section: "chorus" },
+      { text: "I will be content in every circumstance", section: "pre-chorus" },
+      { text: "Jireh, You are enough", section: "chorus" },
+      { text: "I'll never be more loved than I am right now", section: "bridge" },
+      { text: "You're enough, yeah, you're enough", section: "bridge" },
+      { text: "Greater love has no one than this", section: "bridge" },
+      { text: "That You laid down Your life for us", section: "bridge" },
+      { text: "Jireh, You are enough", section: "chorus" },
+    ];
+
+    const seedLines: LyricLine[] = templateTexts.map((item, idx) => {
+      const id = `line_tmpl_${stamp}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      return {
+        id,
+        text: item.text,
+        section: item.section as SectionType,
+        start: idx * 4,
+        end: idx * 4 + 3.5,
+        effect: 'fade' as EffectType,
+        effectOverride: false,
+        words: [],
+      };
+    });
+
+    const syncedLines = analysis
+      ? alignLyricsToAudio(seedLines, analysis).lines
+      : distributeLyricsProportionally(seedLines, trackDuration, []).lines;
+    const finalLines = project.autoEffectsEnabled
+      ? assignAutoEffects(syncedLines, project.autoEffectStyle, true)
+      : syncedLines;
+
+    setProject((prev) => ({
+      ...prev,
+      duration: Math.max(prev.duration, trackDuration),
+      lyrics: resolveLineOverlaps(finalLines, trackDuration),
+      updatedAt: Date.now(),
+    }));
+    setSyncError(null);
+    showToast('Generated worship template lyrics aligned to audio.');
+  }, [
+    analyzeAudioBuffer,
+    audioAnalysis,
+    audioBuffer,
+    project.autoEffectStyle,
+    project.autoEffectsEnabled,
+    project.duration,
+    showToast,
+  ]);
 
   const handleUploadBackgroundMedia = useCallback(
     (file: File) => {
@@ -2317,6 +2777,8 @@ export default function App() {
             <LyricsTab
               audioFileName={project.audioFileName}
               duration={project.duration}
+              language={project.language ?? 'auto'}
+              onChangeLanguage={handleChangeLanguage}
               lyrics={project.lyrics}
               selectedLineId={selectedLineId}
               isSyncing={isSyncing}
@@ -2344,6 +2806,8 @@ export default function App() {
               onUpdateWordText={handleUpdateWordText}
               onMoveLine={handleMoveLine}
               onDeleteLine={handleDeleteLine}
+              onFillLongSongCues={handleFillLongSongCues}
+              onCreateWorshipTemplate={() => void handleCreateWorshipTemplate()}
             />
           </div>
         </aside>
@@ -2436,12 +2900,20 @@ export default function App() {
             })}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-[#121922]">
             {rightTab === 'typography' && (
               <TypographyTab
                 typography={project.typography}
+                vocalLayers={project.vocalLayers ?? DEFAULT_VOCAL_LAYERS}
                 onChange={handleChangeTypography}
-                onReset={() => handleChangeTypography(DEFAULT_TYPOGRAPHY)}
+                onChangeVocalLayers={handleChangeVocalLayers}
+                onReset={() => {
+                  handleChangeTypography(DEFAULT_TYPOGRAPHY);
+                  handleChangeVocalLayers({
+                    ...DEFAULT_VOCAL_LAYERS,
+                    backing: { ...DEFAULT_VOCAL_LAYERS.backing },
+                  });
+                }}
                 savedAlbumPresets={savedAlbumPresets}
                 onSaveAlbumPreset={handleSaveAlbumPreset}
                 onApplyAlbumPreset={handleApplyAlbumPreset}
@@ -2467,10 +2939,12 @@ export default function App() {
               <BackgroundTab
                 aspectRatio={project.aspectRatio}
                 background={project.background}
+                watermark={project.watermark ?? DEFAULT_WATERMARK}
                 onChangeAspectRatio={(ratio: AspectRatio) =>
                   setProject((prev) => ({ ...prev, aspectRatio: ratio }))
                 }
                 onChangeBackground={handleChangeBackground}
+                onChangeWatermark={handleChangeWatermark}
                 onUploadBackgroundMedia={handleUploadBackgroundMedia}
               />
             )}
@@ -2548,19 +3022,39 @@ export default function App() {
                 ),
               }))
             : updatedLines;
-          setProject((prev) => ({
-            ...prev,
-            lyrics: snappedLines,
-            syncReport: {
-              method: 'manual-tap',
-              confidence: 0.96,
-              matchedPhrases: snappedLines.length,
-              totalLines: snappedLines.length,
-              warnings: [],
-              timestamp: Date.now(),
-            },
-          }));
-          showToast('Applied Tap Sync timings.');
+          const maxLineEnd = snappedLines.reduce((m, l) => Math.max(m, l.end), 0);
+          setProject((prev) => {
+            const withEffects = prev.autoEffectsEnabled
+              ? assignAutoEffects(snappedLines, prev.autoEffectStyle, true)
+              : snappedLines;
+            return {
+              ...prev,
+              duration:
+                prev.duration > 0
+                  ? Math.max(prev.duration, Math.ceil(maxLineEnd + 0.5))
+                  : snappedLines.length > 0
+                    ? Math.max(10, Math.ceil(maxLineEnd + 1))
+                    : prev.duration,
+              lyrics: withEffects,
+              syncReport:
+                withEffects.length > 0
+                  ? {
+                      method: 'manual-tap',
+                      confidence: 0.96,
+                      matchedPhrases: withEffects.length,
+                      totalLines: withEffects.length,
+                      warnings: [],
+                      timestamp: Date.now(),
+                    }
+                  : null,
+            };
+          });
+          setSelectedLineId((curr) =>
+            curr && snappedLines.some((l) => l.id === curr)
+              ? curr
+              : (snappedLines[0]?.id ?? null)
+          );
+          showToast('Saved lyrics & Tap Sync timings.');
         }}
         onClose={() => setTapSyncOpen(false)}
       />

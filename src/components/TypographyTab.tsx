@@ -1,11 +1,23 @@
-import React, { useState } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, RotateCcw } from 'lucide-react';
-import { CURATED_FONTS } from '../data/presets';
-import { AlbumStylePreset, TypographyStyle } from '../types/editor';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlignCenter, AlignLeft, AlignRight, Check, RotateCcw } from 'lucide-react';
+import {
+  CURATED_FONTS,
+  DEFAULT_VOCAL_LAYERS,
+  FONT_CATEGORIES,
+  FontCategory,
+} from '../data/presets';
+import {
+  AlbumStylePreset,
+  TypographyStyle,
+  VocalLayersConfig,
+  VocalLayersPatch,
+} from '../types/editor';
 
 interface TypographyTabProps {
   typography: TypographyStyle;
+  vocalLayers?: VocalLayersConfig;
   onChange: (patch: Partial<TypographyStyle>) => void;
+  onChangeVocalLayers?: (patch: VocalLayersPatch) => void;
   onReset: () => void;
   savedAlbumPresets: AlbumStylePreset[];
   onSaveAlbumPreset: (name: string) => void;
@@ -15,21 +27,75 @@ interface TypographyTabProps {
 
 export const TypographyTab: React.FC<TypographyTabProps> = ({
   typography,
+  vocalLayers = DEFAULT_VOCAL_LAYERS,
   onChange,
+  onChangeVocalLayers,
   onReset,
   savedAlbumPresets,
   onSaveAlbumPreset,
   onApplyAlbumPreset,
   onDeleteAlbumPreset,
 }) => {
-  const categories = ['Gospel & Worship', 'Contemporary', 'Editorial', 'Stage & Bold'] as const;
   const activeFont = CURATED_FONTS.find((f) => f.family === typography.fontFamily);
   const availableWeights = activeFont?.weights ?? [400, 500, 600, 700];
+  const [selectedCategory, setSelectedCategory] = useState<'All' | FontCategory>('All');
+  const [previewFamily, setPreviewFamily] = useState<string>(typography.fontFamily);
+  const [fontReady, setFontReady] = useState(true);
   const [presetInput, setPresetInput] = useState('');
   const [presetsOpen, setPresetsOpen] = useState(false);
 
+  useEffect(() => {
+    setPreviewFamily(typography.fontFamily);
+  }, [typography.fontFamily]);
+
+  const previewFontMeta = useMemo(
+    () => CURATED_FONTS.find((f) => f.family === previewFamily) ?? activeFont ?? CURATED_FONTS[0],
+    [previewFamily, activeFont]
+  );
+
+  const previewWeight = useMemo(() => {
+    if (!previewFontMeta) return typography.fontWeight;
+    return previewFontMeta.weights.includes(typography.fontWeight)
+      ? typography.fontWeight
+      : previewFontMeta.weights[0];
+  }, [previewFontMeta, typography.fontWeight]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.fonts) return;
+    let mounted = true;
+    setFontReady(false);
+    void Promise.all([
+      document.fonts.load(`${previewWeight} 24px "${previewFamily}"`),
+      document.fonts.load(`italic ${previewWeight} 20px "${previewFamily}"`),
+    ])
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setFontReady(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [previewFamily, previewWeight]);
+
+  const visibleFonts = useMemo(() => {
+    if (selectedCategory === 'All') return CURATED_FONTS;
+    return CURATED_FONTS.filter((f) => f.category === selectedCategory);
+  }, [selectedCategory]);
+
+  const applyFontChoice = (family: string) => {
+    const nextFont = CURATED_FONTS.find((f) => f.family === family);
+    const nextWeight = nextFont?.weights.includes(typography.fontWeight)
+      ? typography.fontWeight
+      : (nextFont?.weights[0] ?? 600);
+    if (typeof document !== 'undefined' && document.fonts) {
+      void document.fonts.load(`${nextWeight} 48px "${family}"`).catch(() => {});
+    }
+    setPreviewFamily(family);
+    onChange({ fontFamily: family, fontWeight: nextWeight });
+  };
+
   return (
-    <div className="p-2.5 space-y-2.5 overflow-y-auto h-full bg-[#121922]">
+    <div className="p-2.5 space-y-2.5 bg-[#121922]">
       {/* Console Header */}
       <div className="flex items-center justify-between px-0.5">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[#EEF3F8]">
@@ -47,52 +113,139 @@ export const TypographyTab: React.FC<TypographyTabProps> = ({
 
       {/* Section 1: Font & Size */}
       <div className="v-panel p-2.5 space-y-2.5">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-[#8696A8] border-b border-[#273545] pb-1 text-center sm:text-left">
-          1 · Font &amp; Size
+        <div className="flex items-center justify-between border-b border-[#273545] pb-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-[#8696A8]">
+            1 · Font &amp; Size
+          </span>
+          <span className="font-mono-tabular text-[10px] text-[#8696A8]">
+            {CURATED_FONTS.length} fonts
+          </span>
         </div>
 
-        <div className="v-inset px-3 py-2 flex items-center justify-between gap-2">
-          <span
-            className="text-sm text-[#EEF3F8] truncate"
+        {/* Live Font Preview Before Applying */}
+        <div
+          data-testid="font-live-preview"
+          className="v-inset px-3 py-2 space-y-1.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-[#8696A8] truncate">
+              Live Preview · {previewFontMeta?.label ?? previewFamily}
+            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {previewFamily !== typography.fontFamily ? (
+                <button
+                  type="button"
+                  onClick={() => applyFontChoice(previewFamily)}
+                  className="v-btn-teal inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider cursor-pointer"
+                >
+                  <Check className="w-2.5 h-2.5" aria-hidden="true" />
+                  <span>Apply</span>
+                </button>
+              ) : (
+                <span className="font-mono-tabular text-[11px] text-[#22D3EE]">
+                  {typography.fontSize}px
+                </span>
+              )}
+            </div>
+          </div>
+          <div
+            className="text-base leading-snug text-[#EEF3F8] truncate transition-opacity duration-150"
             style={{
-              fontFamily: `"${typography.fontFamily}", sans-serif`,
-              fontWeight: typography.fontWeight,
+              fontFamily: `"${previewFamily}", sans-serif`,
+              fontWeight: previewWeight,
+              opacity: fontReady ? 1 : 0.72,
             }}
           >
-            {activeFont?.label ?? typography.fontFamily}
-          </span>
-          <span className="font-mono-tabular text-[11px] text-[#22D3EE] shrink-0">
-            {typography.fontSize}px
-          </span>
+            Your Jireh · You are enough · Ooooooh
+          </div>
         </div>
 
-        <div className="space-y-1">
-          <label htmlFor="font-family-select" className="block text-[11px] text-[#8696A8]">
-            Font Family
-          </label>
-          <select
-            id="font-family-select"
-            value={typography.fontFamily}
-            onChange={(e) => {
-              const nextFamily = e.target.value;
-              const nextFont = CURATED_FONTS.find((f) => f.family === nextFamily);
-              const nextWeight = nextFont?.weights.includes(typography.fontWeight)
-                ? typography.fontWeight
-                : (nextFont?.weights[0] ?? 600);
-              onChange({ fontFamily: nextFamily, fontWeight: nextWeight });
-            }}
-            className="v-inset w-full px-2 py-1.5 text-xs text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
-          >
-            {categories.map((cat) => (
-              <optgroup key={cat} label={cat}>
-                {CURATED_FONTS.filter((f) => f.category === cat).map((f) => (
-                  <option key={f.family} value={f.family}>
-                    {f.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+        {/* Category Filter + Full Dropdown */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label htmlFor="font-category-select" className="block text-[11px] text-[#8696A8]">
+              Category
+            </label>
+            <select
+              id="font-category-select"
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value as 'All' | FontCategory)}
+              className="v-inset w-full px-2 py-1.5 text-xs text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
+            >
+              <option value="All">All Categories ({CURATED_FONTS.length})</option>
+              {FONT_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat} ({CURATED_FONTS.filter((f) => f.category === cat).length})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="font-family-select" className="block text-[11px] text-[#8696A8]">
+              Font Family
+            </label>
+            <select
+              id="font-family-select"
+              value={typography.fontFamily}
+              onChange={(e) => applyFontChoice(e.target.value)}
+              className="v-inset w-full px-2 py-1.5 text-xs text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
+            >
+              {(selectedCategory === 'All' ? FONT_CATEGORIES : [selectedCategory]).map((cat) => (
+                <optgroup key={cat} label={cat}>
+                  {CURATED_FONTS.filter((f) => f.category === cat).map((f) => (
+                    <option key={f.family} value={f.family}>
+                      {f.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Compact Interactive Font Browser (Hover/Focus to Live Preview, Click to Apply) */}
+        <div
+          aria-label="Font library browser"
+          className="v-inset max-h-32 overflow-y-auto divide-y divide-[#1D2836]"
+        >
+          {visibleFonts.map((fontOpt) => {
+            const isActive = typography.fontFamily === fontOpt.family;
+            const isStaged = previewFamily === fontOpt.family && !isActive;
+            return (
+              <button
+                key={fontOpt.family}
+                type="button"
+                onMouseEnter={() => setPreviewFamily(fontOpt.family)}
+                onFocus={() => setPreviewFamily(fontOpt.family)}
+                onClick={() => applyFontChoice(fontOpt.family)}
+                className={`w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-[#22D3EE]/12 text-[#EEF3F8]'
+                    : isStaged
+                      ? 'bg-[#19232E] text-[#EEF3F8]'
+                      : 'hover:bg-[#19232E]/75 text-[#CBD5E1]'
+                }`}
+              >
+                <span
+                  className="text-xs truncate"
+                  style={{
+                    fontFamily: `"${fontOpt.family}", sans-serif`,
+                    fontWeight: fontOpt.weights[0] ?? 400,
+                  }}
+                >
+                  {fontOpt.label}
+                </span>
+                <span className="text-[10px] text-[#8696A8] shrink-0">
+                  {isActive ? (
+                    <span className="text-[#22D3EE] font-semibold">Active</span>
+                  ) : (
+                    fontOpt.category.split(' ')[0]
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="grid grid-cols-2 gap-2.5">
@@ -514,6 +667,194 @@ export const TypographyTab: React.FC<TypographyTabProps> = ({
             )}
           </div>
         )}
+      </div>
+
+      {/* Section 6: Vocal Layers */}
+      <div className="v-panel p-2.5 space-y-2.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-[#8696A8] border-b border-[#273545] pb-1 text-center sm:text-left">
+          6 · Vocal Layers
+        </div>
+
+        <div className="space-y-1">
+          <span className="block text-[11px] text-[#8696A8]">Layer Visibility</span>
+          <div className="grid grid-cols-4 gap-1">
+            {(
+              [
+                {
+                  key: 'lead',
+                  label: 'Lead',
+                  active: vocalLayers.leadVisible,
+                  toggle: () => onChangeVocalLayers?.({ leadVisible: !vocalLayers.leadVisible }),
+                },
+                {
+                  key: 'backing',
+                  label: 'Backing',
+                  active: vocalLayers.backing.visible,
+                  toggle: () =>
+                    onChangeVocalLayers?.({
+                      backing: { visible: !vocalLayers.backing.visible },
+                      backingUserConfigured: true,
+                    }),
+                },
+                {
+                  key: 'choir',
+                  label: 'Choir',
+                  active: vocalLayers.choirVisible,
+                  toggle: () => onChangeVocalLayers?.({ choirVisible: !vocalLayers.choirVisible }),
+                },
+                {
+                  key: 'adlib',
+                  label: 'Ad-lib',
+                  active: vocalLayers.adlibVisible,
+                  toggle: () => onChangeVocalLayers?.({ adlibVisible: !vocalLayers.adlibVisible }),
+                },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                aria-pressed={item.active}
+                onClick={item.toggle}
+                className={`py-1 text-[10px] font-semibold uppercase tracking-wider cursor-pointer ${
+                  item.active ? 'v-btn-teal' : 'v-btn text-[#8696A8]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="space-y-1">
+            <label htmlFor="backing-color-input" className="block text-[11px] text-[#8696A8]">
+              Backing Colour
+            </label>
+            <div className="v-inset flex items-center gap-1.5 px-2 py-1">
+              <input
+                id="backing-color-input"
+                type="color"
+                value={vocalLayers.backing.color}
+                onChange={(e) =>
+                  onChangeVocalLayers?.({ backing: { color: e.target.value } })
+                }
+                className="w-5 h-5 bg-transparent border-0 cursor-pointer p-0"
+              />
+              <span className="font-mono-tabular text-[11px] text-[#EEF3F8] uppercase">
+                {vocalLayers.backing.color}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-[11px]">
+              <label htmlFor="backing-size-slider" className="text-[#8696A8]">
+                Backing Size
+              </label>
+              <span className="font-mono-tabular text-[#EEF3F8]">
+                {Math.round(vocalLayers.backing.fontScale * 100)}%
+              </span>
+            </div>
+            <input
+              id="backing-size-slider"
+              type="range"
+              min={0.5}
+              max={0.95}
+              step={0.02}
+              value={vocalLayers.backing.fontScale}
+              onChange={(e) =>
+                onChangeVocalLayers?.({ backing: { fontScale: Number(e.target.value) } })
+              }
+              className="w-full studio-slider"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="space-y-1">
+            <div className="flex justify-between text-[11px]">
+              <label htmlFor="backing-pos-y-slider" className="text-[#8696A8]">
+                Backing Y Pos
+              </label>
+              <span className="font-mono-tabular text-[#EEF3F8]">
+                {Math.round(vocalLayers.backing.positionY * 100)}%
+              </span>
+            </div>
+            <input
+              id="backing-pos-y-slider"
+              type="range"
+              min={0.15}
+              max={0.86}
+              step={0.01}
+              value={vocalLayers.backing.positionY}
+              onChange={(e) =>
+                onChangeVocalLayers?.({ backing: { positionY: Number(e.target.value) } })
+              }
+              className="w-full studio-slider"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-[11px]">
+              <label htmlFor="backing-pos-x-slider" className="text-[#8696A8]">
+                Backing X Pos
+              </label>
+              <span className="font-mono-tabular text-[#EEF3F8]">
+                {Math.round(vocalLayers.backing.positionX * 100)}%
+              </span>
+            </div>
+            <input
+              id="backing-pos-x-slider"
+              type="range"
+              min={0.15}
+              max={0.85}
+              step={0.01}
+              value={vocalLayers.backing.positionX}
+              onChange={(e) =>
+                onChangeVocalLayers?.({ backing: { positionX: Number(e.target.value) } })
+              }
+              className="w-full studio-slider"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="space-y-1">
+            <label htmlFor="choir-color-input" className="block text-[11px] text-[#8696A8]">
+              Choir Colour
+            </label>
+            <div className="v-inset flex items-center gap-1.5 px-2 py-1">
+              <input
+                id="choir-color-input"
+                type="color"
+                value={vocalLayers.choirColor}
+                onChange={(e) => onChangeVocalLayers?.({ choirColor: e.target.value })}
+                className="w-5 h-5 bg-transparent border-0 cursor-pointer p-0"
+              />
+              <span className="font-mono-tabular text-[11px] text-[#EEF3F8] uppercase">
+                {vocalLayers.choirColor}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="adlib-color-input" className="block text-[11px] text-[#8696A8]">
+              Ad-lib Colour
+            </label>
+            <div className="v-inset flex items-center gap-1.5 px-2 py-1">
+              <input
+                id="adlib-color-input"
+                type="color"
+                value={vocalLayers.adlibColor}
+                onChange={(e) => onChangeVocalLayers?.({ adlibColor: e.target.value })}
+                className="w-5 h-5 bg-transparent border-0 cursor-pointer p-0"
+              />
+              <span className="font-mono-tabular text-[11px] text-[#EEF3F8] uppercase">
+                {vocalLayers.adlibColor}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

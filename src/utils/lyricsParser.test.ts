@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { countSyllables, parseLyricsText } from './lyricsParser';
+import { CURATED_FONTS, FONT_CATEGORIES, LYRIC_LANGUAGES } from '../data/presets';
 
 test('countSyllables estimates English words accurately', () => {
   assert.equal(countSyllables('grace'), 1);
@@ -41,7 +42,7 @@ test('parseLyricsText parses LRC timestamps when present', () => {
   assert.ok(result.lines[0].end <= 6.0);
 });
 
-test('parseLyricsText strips Suno prompt tags and preserves prose words and sung ad-libs', () => {
+test('parseLyricsText strips Suno prompt tags and inline bracketed backing vocals cleanly', () => {
   const sunoRaw = `[Intro: Acoustic Guitar]
 [Style: Afrobeats, 104 BPM]
 [Verse 1: Soft Vocals]
@@ -52,8 +53,102 @@ Cross the bridge before midnight (yeah)
   const result = parseLyricsText(sunoRaw, 30, 'fade');
   assert.equal(result.lines.length, 2);
   assert.equal(result.lines[0].section, 'verse');
-  assert.equal(result.lines[0].text, 'Cross the bridge before midnight (yeah)');
+  assert.equal(result.lines[0].text, 'Cross the bridge before midnight');
   assert.equal(result.lines[1].section, 'chorus');
   assert.equal(result.lines[1].text, 'Lift your voice up high');
+});
+
+test('parseLyricsText infers backing vocal role from parenthesized lines cleanly without keeping parentheses', () => {
+  const lrc = `[00:01.00]Your Jireh
+[00:01.50](Jireh)
+[00:04.00]You are enough
+[00:04.50](You are enough)`;
+
+  const result = parseLyricsText(lrc, 12, 'fade');
+  assert.equal(result.lines.length, 4);
+  assert.equal(result.lines[0].vocalRole, 'lead');
+  assert.equal(result.lines[1].vocalRole, 'backing');
+  assert.equal(result.lines[1].text, 'Jireh');
+  assert.equal(result.lines[2].vocalRole, 'lead');
+  assert.equal(result.lines[3].vocalRole, 'backing');
+  assert.equal(result.lines[3].text, 'You are enough');
+});
+
+test('CURATED_FONTS provides at least 40 categorized fonts including all required families', () => {
+  assert.ok(CURATED_FONTS.length >= 40, `Expected >= 40 curated fonts, got ${CURATED_FONTS.length}`);
+  const expectedCategories = [
+    'Modern Sans Serif',
+    'Elegant Serif',
+    'Bold and Cinematic',
+    'Handwriting and Script',
+    'Minimalist',
+    'Decorative Typography',
+  ];
+  assert.deepEqual([...FONT_CATEGORIES], expectedCategories);
+  for (const cat of expectedCategories) {
+    assert.ok(
+      CURATED_FONTS.some((f) => f.category === cat),
+      `Expected category "${cat}" to have curated fonts`
+    );
+  }
+  const requiredFamilies = [
+    'Inter',
+    'Roboto',
+    'Montserrat',
+    'Poppins',
+    'Open Sans',
+    'Lato',
+    'Playfair Display',
+    'Cormorant Garamond',
+    'Dancing Script',
+    'Great Vibes',
+    'Allura',
+    'Sacramento',
+    'Caveat',
+    'Pacifico',
+  ];
+  const families = new Set(CURATED_FONTS.map((f) => f.family));
+  for (const req of requiredFamilies) {
+    assert.ok(families.has(req), `Missing required font family: ${req}`);
+  }
+});
+
+test('countSyllables and parseLyricsText accurately support Swahili, Shona, French, English, and non-Latin scripts', () => {
+  // Swahili & Shona open-syllable words
+  assert.equal(countSyllables('mbele'), 2);
+  assert.equal(countSyllables('asante'), 3);
+  assert.equal(countSyllables('ndinotenda'), 4);
+  assert.equal(countSyllables('mutsvene'), 3);
+
+  // French accented words & elisions
+  assert.equal(countSyllables('Célébrons'), 3);
+  assert.equal(countSyllables('Jésus'), 2);
+  assert.equal(countSyllables("L'amour"), 2);
+  assert.equal(countSyllables('adoré'), 3);
+
+  // Non-Latin scripts (Arabic, Amharic, Korean, Chinese)
+  assert.ok(countSyllables('سبحان') >= 2);
+  assert.equal(countSyllables('አሜን'), 3);
+  assert.equal(countSyllables('사랑해'), 3);
+  assert.equal(countSyllables('赞美'), 2);
+
+  const multiLrc = `[00:01.00] Haleluya Bwana Yesu ametenda amani
+[00:04.50] Ndinotenda Mwari wangu mutsvene
+[00:08.00] Célébrons Jésus pour l'amour éternel
+[00:11.50] سبحان الله العظيم`;
+
+  const parsed = parseLyricsText(multiLrc, 18, 'karaoke');
+  assert.equal(parsed.hasLrcTimestamps, true);
+  assert.equal(parsed.lines.length, 4);
+  assert.equal(parsed.lines[0].text, 'Haleluya Bwana Yesu ametenda amani');
+  assert.equal(parsed.lines[1].text, 'Ndinotenda Mwari wangu mutsvene');
+  assert.equal(parsed.lines[2].text, "Célébrons Jésus pour l'amour éternel");
+  assert.equal(parsed.lines[3].text, 'سبحان الله العظيم');
+  assert.equal(parsed.lines[2].words[3].text, "l'amour");
+
+  const langCodes = new Set(LYRIC_LANGUAGES.map((l) => l.code));
+  for (const requiredCode of ['auto', 'sw', 'sn', 'en', 'fr']) {
+    assert.ok(langCodes.has(requiredCode), `Missing language preset: ${requiredCode}`);
+  }
 });
 

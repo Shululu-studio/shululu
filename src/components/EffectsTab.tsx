@@ -27,7 +27,7 @@ export const EffectsTab: React.FC<EffectsTabProps> = ({
   onUpdateLine,
 }) => {
   return (
-    <div className="p-2.5 space-y-2.5 overflow-y-auto h-full bg-[#121922]">
+    <div className="p-2.5 space-y-2.5 bg-[#121922]">
       {/* 1. Global Auto Effects Switcher */}
       <div className="v-panel p-2.5 space-y-2.5">
         <div className="flex items-center justify-between border-b border-[#273545] pb-1.5">

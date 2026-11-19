@@ -1,24 +1,29 @@
 import React, { useRef } from 'react';
 import { Image as ImageIcon, Upload, Video } from 'lucide-react';
-import { BACKGROUND_TEMPLATES, GRADIENT_PRESETS } from '../data/presets';
-import { AspectRatio, BackgroundConfig } from '../types/editor';
+import { BACKGROUND_TEMPLATES, DEFAULT_WATERMARK, GRADIENT_PRESETS } from '../data/presets';
+import { AspectRatio, BackgroundConfig, WatermarkConfig } from '../types/editor';
 
 interface BackgroundTabProps {
   aspectRatio: AspectRatio;
   background: BackgroundConfig;
+  watermark?: Partial<WatermarkConfig> | null;
   onChangeAspectRatio: (ratio: AspectRatio) => void;
   onChangeBackground: (patch: Partial<BackgroundConfig>) => void;
+  onChangeWatermark: (patch: Partial<WatermarkConfig>) => void;
   onUploadBackgroundMedia: (file: File) => void;
 }
 
 export const BackgroundTab: React.FC<BackgroundTabProps> = ({
   aspectRatio,
   background,
+  watermark,
   onChangeAspectRatio,
   onChangeBackground,
+  onChangeWatermark,
   onUploadBackgroundMedia,
 }) => {
   const mediaInputRef = useRef<HTMLInputElement>(null);
+  const safeWatermark: WatermarkConfig = { ...DEFAULT_WATERMARK, ...(watermark ?? {}) };
 
   return (
     <div className="p-2.5 space-y-2.5 overflow-y-auto h-full bg-[#121922]">
@@ -419,6 +424,136 @@ export const BackgroundTab: React.FC<BackgroundTabProps> = ({
             />
           </div>
         </div>
+      </div>
+
+      {/* 4. Shululu Watermark & Branding */}
+      <div className="v-panel p-2.5 space-y-2.5">
+        <div className="flex items-center justify-between border-b border-[#273545] pb-1">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[#8696A8]">
+            4 · Shululu Watermark &amp; Branding
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-[#EEF3F8]">
+            <input
+              type="checkbox"
+              checked={safeWatermark.enabled}
+              onChange={(e) => onChangeWatermark({ enabled: e.target.checked })}
+              className="rounded bg-[#0C1117] border-[#273545] text-[#22D3EE] focus:ring-0 cursor-pointer"
+            />
+            <span>Enabled</span>
+          </label>
+        </div>
+
+        {safeWatermark.enabled && (
+          <div className="space-y-2 pt-1">
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#8696A8]">Watermark Text</label>
+              <input
+                type="text"
+                value={safeWatermark.text}
+                onChange={(e) => onChangeWatermark({ text: e.target.value })}
+                placeholder="Shululu Lyrics"
+                className="v-inset w-full px-2 py-1 text-xs text-[#EEF3F8] outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#8696A8]">Handwritten Font Style</label>
+              <select
+                value={safeWatermark.fontFamily}
+                onChange={(e) => onChangeWatermark({ fontFamily: e.target.value })}
+                className="v-inset w-full px-2 py-1 text-xs text-[#EEF3F8] outline-none cursor-pointer font-medium"
+              >
+                <option value="Caveat">Caveat (Handwritten Bold)</option>
+                <option value="Dancing Script">Dancing Script (Cursive)</option>
+                <option value="Pacifico">Pacifico (Smooth Brush)</option>
+                <option value="Architects Daughter">Architects Daughter (Marker)</option>
+                <option value="Permanent Marker">Permanent Marker (Bold Sign)</option>
+                <option value="Great Vibes">Great Vibes (Elegant Script)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#8696A8]">Position</label>
+              <select
+                value={safeWatermark.position}
+                onChange={(e) => onChangeWatermark({ position: e.target.value as WatermarkConfig['position'] })}
+                className="v-inset w-full px-2 py-1 text-xs text-[#EEF3F8] outline-none cursor-pointer"
+              >
+                <option value="bottom-right">Bottom Right</option>
+                <option value="bottom-left">Bottom Left</option>
+                <option value="top-right">Top Right</option>
+                <option value="top-left">Top Left</option>
+                <option value="bottom-center">Bottom Center</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-[#8696A8]">Size</span>
+                  <span className="font-mono-tabular text-[#EEF3F8]">{safeWatermark.fontSize}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={20}
+                  max={60}
+                  step={2}
+                  value={safeWatermark.fontSize}
+                  onChange={(e) => onChangeWatermark({ fontSize: Number(e.target.value) })}
+                  className="w-full studio-slider"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-[#8696A8]">Stroke Width</span>
+                  <span className="font-mono-tabular text-[#EEF3F8]">{safeWatermark.strokeWidth}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={5}
+                  step={0.5}
+                  value={safeWatermark.strokeWidth}
+                  onChange={(e) => onChangeWatermark({ strokeWidth: Number(e.target.value) })}
+                  className="w-full studio-slider"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <label className="space-y-1 text-[11px] text-[#8696A8]">
+                <span>Text Color</span>
+                <div className="v-inset flex items-center gap-1.5 px-2 py-1">
+                  <input
+                    type="color"
+                    value={safeWatermark.color}
+                    onChange={(e) => onChangeWatermark({ color: e.target.value })}
+                    className="w-5 h-5 bg-transparent border-0 p-0 cursor-pointer"
+                  />
+                  <span className="font-mono-tabular text-[11px] text-[#EEF3F8]">
+                    {safeWatermark.color}
+                  </span>
+                </div>
+              </label>
+
+              <label className="space-y-1 text-[11px] text-[#8696A8]">
+                <span>Stroke Color</span>
+                <div className="v-inset flex items-center gap-1.5 px-2 py-1">
+                  <input
+                    type="color"
+                    value={safeWatermark.strokeColor}
+                    onChange={(e) => onChangeWatermark({ strokeColor: e.target.value })}
+                    className="w-5 h-5 bg-transparent border-0 p-0 cursor-pointer"
+                  />
+                  <span className="font-mono-tabular text-[11px] text-[#EEF3F8]">
+                    {safeWatermark.strokeColor}
+                  </span>
+                </div>
+              </label>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

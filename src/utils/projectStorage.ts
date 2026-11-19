@@ -1,4 +1,16 @@
-import { CachedLibraryPack, ProjectData, ProjectSummary } from '../types/editor';
+import {
+  DEFAULT_BACKGROUND,
+  DEFAULT_TYPOGRAPHY,
+  DEFAULT_VOCAL_LAYERS,
+  DEFAULT_WATERMARK,
+} from '../data/presets';
+import { CachedLibraryPack, LyricLine, ProjectData, ProjectSummary } from '../types/editor';
+import { buildWordTimings } from './lyricsParser';
+import {
+  cleanLyricSegmentText,
+  formatLyricForVocalRole,
+  inferVocalRoleFromText,
+} from './transcriptionParser';
 
 const DB_NAME = 'verseframe_studio_db';
 const DB_VERSION = 1;
@@ -82,10 +94,71 @@ export async function listProjectsFromDb(): Promise<ProjectSummary[]> {
       createdAt: p.createdAt,
       aspectRatio: p.aspectRatio,
       duration: p.duration,
-      lineCount: p.lyrics.length,
+      lineCount: Array.isArray(p.lyrics) ? p.lyrics.length : 0,
       audioFileName: p.audioFileName,
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function sanitizeLoadedLyricLine(line: LyricLine): LyricLine {
+  const rawText = typeof line.text === 'string' ? line.text : '';
+  const { text: cleaned } = cleanLyricSegmentText(rawText);
+  const role = inferVocalRoleFromText(cleaned || rawText, line.vocalRole);
+  const cleanText = formatLyricForVocalRole(cleaned || rawText, role);
+
+  if (!cleanText || cleanText === rawText) {
+    return {
+      ...line,
+      vocalRole: role,
+    };
+  }
+
+  const tokens = cleanText.split(/\s+/).filter(Boolean);
+  const existingWords = Array.isArray(line.words) ? line.words : [];
+  let nextWords = existingWords;
+
+  if (tokens.length > 0 && existingWords.length === tokens.length) {
+    nextWords = existingWords.map((w, idx) => ({
+      ...w,
+      text: tokens[idx],
+    }));
+  } else {
+    nextWords = buildWordTimings(cleanText, line.start, line.end, line.id);
+  }
+
+  return {
+    ...line,
+    text: cleanText,
+    vocalRole: role,
+    words: nextWords,
+  };
+}
+
+export function normalizeLoadedProject(project: ProjectData): ProjectData {
+  const backingUserConfigured = Boolean(project.vocalLayers?.backingUserConfigured);
+  return {
+    ...project,
+    language: project.language || 'auto',
+    typography: { ...DEFAULT_TYPOGRAPHY, ...(project.typography ?? {}) },
+    vocalLayers: {
+      ...DEFAULT_VOCAL_LAYERS,
+      ...(project.vocalLayers ?? {}),
+      backing: {
+        ...DEFAULT_VOCAL_LAYERS.backing,
+        ...(project.vocalLayers?.backing ?? {}),
+        visible: backingUserConfigured
+          ? Boolean(project.vocalLayers?.backing?.visible)
+          : false,
+      },
+    },
+    background: { ...DEFAULT_BACKGROUND, ...(project.background ?? {}) },
+    watermark: { ...DEFAULT_WATERMARK, ...(project.watermark ?? {}) },
+    lyrics: Array.isArray(project.lyrics)
+      ? project.lyrics
+          .map(sanitizeLoadedLyricLine)
+          .filter((line) => line.text.trim().length > 0)
+      : [],
+  };
 }
 
 export async function loadProjectFromDb(projectId: string): Promise<{
@@ -105,7 +178,7 @@ export async function loadProjectFromDb(projectId: string): Promise<{
     (store) => store.get(projectId)
   );
   return {
-    project,
+    project: normalizeLoadedProject(project),
     audioBlob: assets?.audioBlob ?? null,
     bgMediaBlob: assets?.bgMediaBlob ?? null,
   };
@@ -165,7 +238,11 @@ export async function loadRecoveryState(): Promise<{
       }
     | undefined
   >(STORE_RECOVERY, 'readonly', (store) => store.get('active_session'));
-  return res ?? null;
+  if (!res) return null;
+  return {
+    ...res,
+    project: normalizeLoadedProject(res.project),
+  };
 }
 
 export async function saveCachedLibraryPack(pack: CachedLibraryPack): Promise<void> {

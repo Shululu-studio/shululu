@@ -15,13 +15,22 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { SECTION_COLORS, SECTION_LABELS } from '../data/presets';
-import { LyricLine, SectionType } from '../types/editor';
+import { LYRIC_LANGUAGES, SECTION_COLORS, SECTION_LABELS } from '../data/presets';
+import { LyricLine, SectionType, VocalRole } from '../types/editor';
 import { formatTimecode } from '../utils/timeFormat';
+
+const VOCAL_ROLE_LABELS: Record<VocalRole, string> = {
+  lead: 'Lead',
+  backing: 'Backing',
+  choir: 'Choir',
+  adlib: 'Ad-lib',
+};
 
 interface LyricsTabProps {
   audioFileName: string | null;
   duration: number;
+  language?: string;
+  onChangeLanguage?: (language: string) => void;
   lyrics: LyricLine[];
   selectedLineId: string | null;
   isSyncing: boolean;
@@ -45,6 +54,8 @@ interface LyricsTabProps {
   onUpdateWordText: (lineId: string, wordId: string, newText: string) => void;
   onMoveLine: (id: string, direction: -1 | 1) => void;
   onDeleteLine: (id: string) => void;
+  onFillLongSongCues?: () => void;
+  onCreateWorshipTemplate?: () => void;
 }
 
 function formatLyricsForBulkEdit(lyrics: LyricLine[]): string {
@@ -64,6 +75,8 @@ function formatLyricsForBulkEdit(lyrics: LyricLine[]): string {
 export const LyricsTab: React.FC<LyricsTabProps> = ({
   audioFileName,
   duration,
+  language = 'auto',
+  onChangeLanguage,
   lyrics,
   selectedLineId,
   isSyncing,
@@ -87,6 +100,8 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
   onUpdateWordText,
   onMoveLine,
   onDeleteLine,
+  onFillLongSongCues,
+  onCreateWorshipTemplate,
 }) => {
   const audioInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
@@ -95,6 +110,7 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [bulkDraft, setBulkDraft] = useState('');
   const [expandedWordsLineId, setExpandedWordsLineId] = useState<string | null>(null);
+  const [reviewOnlyUncertain, setReviewOnlyUncertain] = useState(false);
 
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   const [urlInputMode, setUrlInputMode] = useState(false);
@@ -142,6 +158,22 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
   const formattedCurrentLyrics = useMemo(
     () => formatLyricsForBulkEdit(lyrics),
     [lyrics]
+  );
+
+  const uncertainLines = useMemo(
+    () =>
+      lyrics.filter(
+        (l) =>
+          Boolean(l.uncertain) ||
+          (typeof l.confidence === 'number' && l.confidence < 0.72) ||
+          l.words.some((w) => w.uncertain)
+      ),
+    [lyrics]
+  );
+
+  const displayedLyrics = useMemo(
+    () => (reviewOnlyUncertain && uncertainLines.length > 0 ? uncertainLines : lyrics),
+    [lyrics, reviewOnlyUncertain, uncertainLines]
   );
 
   const handleOpenBulkEdit = () => {
@@ -238,7 +270,8 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                     setUrlInputMode(false);
                     setUrlError(null);
                   }}
-                  className="text-[#8696A8] hover:text-[#EEF3F8] text-xs font-bold cursor-pointer"
+                  className="v-btn w-6 h-6 flex items-center justify-center text-[#8696A8] hover:text-[#EEF3F8] text-xs font-bold cursor-pointer"
+                  aria-label="Close audio source picker"
                 >
                   ✕
                 </button>
@@ -314,6 +347,30 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
           <div className="text-[10px] font-semibold uppercase tracking-wider text-[#8696A8] px-0.5 text-center sm:text-left">
             Lyrics &amp; Timing Tools
           </div>
+          {onChangeLanguage && (
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <label
+                htmlFor="lyrics-language-select"
+                className="text-[10px] font-medium uppercase tracking-wider text-[#8696A8] shrink-0"
+              >
+                Language
+              </label>
+              <select
+                id="lyrics-language-select"
+                aria-label="Lyrics language"
+                value={language}
+                onChange={(e) => onChangeLanguage(e.target.value)}
+                disabled={isSyncing}
+                className="v-inset flex-1 min-w-0 px-2 py-1 text-[11px] text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
+              >
+                {LYRIC_LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-1.5">
             <button
               type="button"
@@ -346,7 +403,7 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
               ) : (
                 <AudioLines className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
               )}
-              <span>Auto-Create</span>
+              <span>Auto Transcribe</span>
             </button>
 
             <button
@@ -404,6 +461,15 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
               <span className="leading-snug">{syncError}</span>
             </div>
             <div className="flex items-center justify-end gap-1.5">
+              {onCreateWorshipTemplate && (
+                <button
+                  type="button"
+                  onClick={onCreateWorshipTemplate}
+                  className="v-btn-teal px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer"
+                >
+                  Worship Template
+                </button>
+              )}
               {onCreateBlankCueSlots && (
                 <button
                   type="button"
@@ -463,15 +529,35 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
           </div>
         )}
 
-        {autoReviewActive && lyrics.length > 0 && !isSyncing && (
+        {(autoReviewActive || uncertainLines.length > 0) && lyrics.length > 0 && !isSyncing && (
           <div className="v-panel p-2 border-[#22D3EE]/50 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="v-led v-led-active" aria-hidden="true" />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[#EEF3F8] truncate">
-                Review Lyrics
+                {uncertainLines.length > 0
+                  ? `Review (${uncertainLines.length} uncertain)`
+                  : 'Review Lyrics'}
               </span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              {uncertainLines.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !reviewOnlyUncertain;
+                    setReviewOnlyUncertain(next);
+                    if (next && uncertainLines[0]) {
+                      onSelectLine(uncertainLines[0].id);
+                      setExpandedWordsLineId(uncertainLines[0].id);
+                    }
+                  }}
+                  className={`px-2 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer ${
+                    reviewOnlyUncertain ? 'v-btn-amber' : 'v-btn'
+                  }`}
+                >
+                  {reviewOnlyUncertain ? 'All Cues' : 'Flagged'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleOpenBulkEdit}
@@ -480,11 +566,12 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                 <Edit3 className="w-3 h-3 text-[#D4D4D8]" aria-hidden="true" />
                 <span>{bulkEditOpen ? 'Close' : 'Edit All'}</span>
               </button>
-              {onDismissAutoReview && (
+              {onDismissAutoReview && autoReviewActive && (
                 <button
                   type="button"
                   onClick={() => {
                     setBulkEditOpen(false);
+                    setReviewOnlyUncertain(false);
                     onDismissAutoReview();
                   }}
                   className="v-btn-teal px-2.5 py-1 text-[11px] uppercase tracking-wider whitespace-nowrap cursor-pointer"
@@ -532,29 +619,48 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
         )}
       </div>
 
+      {duration > 150 && lyrics.length > 0 && lyrics[lyrics.length - 1].end < duration - 45 && (
+        <div className="mx-2.5 mt-2.5 v-panel p-2.5 border-[#22D3EE]/50 bg-[#13222B] flex items-center justify-between gap-2 shrink-0">
+          <div className="space-y-0.5 min-w-0">
+            <div className="text-[11px] font-bold text-[#22D3EE] uppercase tracking-wider">
+              Long Song Detected ({Math.round(duration / 60)} min)
+            </div>
+            <div className="text-[10px] text-[#8696A8] truncate">
+              Lyrics end at {formatTimecode(lyrics[lyrics.length - 1].end)}. Fill vamps to end?
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onFillLongSongCues?.()}
+            className="v-btn-teal px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer shrink-0"
+          >
+            Fill Remaining Cues
+          </button>
+        </div>
+      )}
+
       {/* Group 3: Lyric Cue List Header */}
-      <div className="px-2.5 py-2 border-b border-[#273545] flex items-center justify-between shrink-0 bg-[#19232E]">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-[#EEF3F8]">
+      <div className="px-2.5 py-2 border-b border-[#273545] flex items-center justify-between gap-1.5 shrink-0 bg-[#19232E]">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[#EEF3F8] whitespace-nowrap shrink-0">
           Lines <span className="font-mono-tabular text-[#22D3EE]">({lyrics.length})</span>
         </span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 min-w-0">
           {lyrics.length > 0 && !autoReviewActive && (
             <button
               type="button"
               onClick={handleOpenBulkEdit}
               className="v-btn inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer"
             >
-              <Edit3 className="w-3 h-3 text-[#D4D4D8]" aria-hidden="true" />
               <span>Edit All</span>
             </button>
           )}
           <button
             type="button"
             onClick={onAddLine}
-            className="v-btn inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer"
+            className="v-btn inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap cursor-pointer"
           >
-            <Plus className="w-3 h-3 text-[#D4D4D8]" aria-hidden="true" />
-            <span>Add Line</span>
+            <Plus className="w-3 h-3 text-[#D4D4D8] shrink-0" aria-hidden="true" />
+            <span>Add</span>
           </button>
         </div>
       </div>
@@ -565,13 +671,19 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
           <div className="v-panel p-4 text-center space-y-1.5 mt-1">
             <p className="text-xs font-medium text-[#EEF3F8]">No Lyric Cues</p>
             <p className="text-[11px] text-[#8696A8]">
-              Load audio and click Auto-Create, Paste, or Add Line.
+              Load audio and click Auto Transcribe, Paste, or Add Line.
             </p>
           </div>
         ) : (
-          lyrics.map((line, index) => {
+          displayedLyrics.map((line) => {
+            const index = lyrics.findIndex((l) => l.id === line.id);
             const isSelected = line.id === selectedLineId;
             const wordsExpanded = expandedWordsLineId === line.id;
+            const lineRole: VocalRole = line.vocalRole ?? 'lead';
+            const hasUncertain =
+              Boolean(line.uncertain) ||
+              (typeof line.confidence === 'number' && line.confidence < 0.72) ||
+              line.words.some((w) => w.uncertain);
 
             return (
               <div
@@ -580,11 +692,13 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                 className={`p-2.5 rounded-[5px] border transition-colors cursor-pointer space-y-2 ${
                   isSelected
                     ? 'bg-[#13222B] border-[#22D3EE]'
-                    : 'bg-[#151E28] border-[#273545] hover:border-[#3A4E63]'
+                    : hasUncertain
+                      ? 'bg-[#151E28] border-[#F2C230]/65 hover:border-[#F2C230]'
+                      : 'bg-[#151E28] border-[#273545] hover:border-[#3A4E63]'
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1 min-w-0 flex-wrap">
                     <span
                       className={`v-led ${isSelected ? 'v-led-active' : ''}`}
                       aria-hidden="true"
@@ -614,6 +728,51 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                         </option>
                       ))}
                     </select>
+                    <select
+                      aria-label={`Vocal role for line ${index + 1}`}
+                      value={lineRole}
+                      onChange={(e) =>
+                        onUpdateLine(line.id, { vocalRole: e.target.value as VocalRole })
+                      }
+                      onClick={(e) => e.stopPropagation()}
+                      title="Vocal layer (Lead, Backing, Choir, Ad-lib)"
+                      className={`text-[10px] font-semibold uppercase tracking-wider bg-[#0C1117] border rounded-[3px] px-1.5 py-0.5 focus:outline-none ${
+                        lineRole === 'backing'
+                          ? 'border-[#22D3EE]/70 text-[#22D3EE]'
+                          : lineRole === 'choir'
+                            ? 'border-[#2EC46E]/70 text-[#2EC46E]'
+                            : lineRole === 'adlib'
+                              ? 'border-[#F2C230]/70 text-[#F2C230]'
+                              : 'border-[#273545] text-[#CBD5E1]'
+                      }`}
+                    >
+                      {(Object.keys(VOCAL_ROLE_LABELS) as VocalRole[]).map((role) => (
+                        <option key={role} value={role}>
+                          {VOCAL_ROLE_LABELS[role]}
+                        </option>
+                      ))}
+                    </select>
+                    {hasUncertain && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onUpdateLine(line.id, {
+                            uncertain: false,
+                            confidence: 1,
+                            words: line.words.map((w) => ({
+                              ...w,
+                              uncertain: false,
+                              confidence: 1,
+                            })),
+                          });
+                        }}
+                        title="Low transcription confidence — edit text or click to confirm"
+                        className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-[#F2C230]/15 text-[#F2C230] border border-[#F2C230]/50 rounded-[2px] hover:bg-[#F2C230]/25 cursor-pointer"
+                      >
+                        Check
+                      </button>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
@@ -682,7 +841,7 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                           );
                           onUpdateLine(line.id, { start: nextStart });
                         }}
-                        className="v-inset w-14 px-1.5 py-0.5 font-mono-tabular text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
+                        className="v-inset w-[68px] px-1.5 py-0.5 font-mono-tabular text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
                       />
                     </label>
                     <label className="text-[#8696A8] flex items-center gap-1">
@@ -701,7 +860,7 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                             ),
                           })
                         }
-                        className="v-inset w-14 px-1.5 py-0.5 font-mono-tabular text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
+                        className="v-inset w-[68px] px-1.5 py-0.5 font-mono-tabular text-[#EEF3F8] focus:outline-none focus:border-[#22D3EE]"
                       />
                     </label>
                   </div>
@@ -728,14 +887,18 @@ export const LyricsTab: React.FC<LyricsTabProps> = ({
                     {line.words.map((w, wIdx) => (
                       <div
                         key={w.id}
-                        className="v-inset flex items-center gap-1 px-1.5 py-1"
+                        className={`v-inset flex items-center gap-1 px-1.5 py-1 ${
+                          w.uncertain ? 'border-[#F2C230]/75' : ''
+                        }`}
                       >
                         <input
                           type="text"
                           aria-label={`Word ${wIdx + 1} in line ${index + 1}`}
                           value={w.text}
                           onChange={(e) => onUpdateWordText(line.id, w.id, e.target.value)}
-                          className="w-full min-w-0 bg-transparent text-[11px] text-[#EEF3F8] focus:outline-none"
+                          className={`w-full min-w-0 bg-transparent text-[11px] focus:outline-none ${
+                            w.uncertain ? 'text-[#F2C230]' : 'text-[#EEF3F8]'
+                          }`}
                         />
                         <span className="font-mono-tabular text-[10px] text-[#8696A8] shrink-0">
                           {w.start.toFixed(1)}s

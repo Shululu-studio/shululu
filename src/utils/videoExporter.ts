@@ -66,10 +66,29 @@ async function ensureStaticImageLoaded(
   };
 }
 
+async function ensureExportFontsLoaded(project: ProjectData): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts) return;
+  const lyricFamily = project.typography.fontFamily || 'Roboto';
+  const lyricWeight = project.typography.fontWeight || 700;
+  const watermarkFamily = project.watermark?.fontFamily || 'Caveat';
+  await Promise.race([
+    Promise.all([
+      document.fonts.ready,
+      document.fonts.load(`${lyricWeight} 64px "${lyricFamily}"`).catch(() => []),
+      document.fonts.load(`400 64px "${lyricFamily}"`).catch(() => []),
+      document.fonts.load(`italic ${lyricWeight} 48px "${lyricFamily}"`).catch(() => []),
+      document.fonts.load(`700 48px "${watermarkFamily}"`).catch(() => []),
+      document.fonts.load('700 48px "Caveat"').catch(() => []),
+    ]),
+    new Promise<void>((resolve) => setTimeout(resolve, 4000)),
+  ]).catch(() => {});
+}
+
 async function prepareExportVideo(
   project: ProjectData,
   mediaCache: MediaAssetCache
 ): Promise<PreparedExportVideo> {
+  await ensureExportFontsLoaded(project);
   let workingCache = mediaCache;
   if (project.background.type === 'template') {
     const tpl =
@@ -383,6 +402,17 @@ export async function exportLyricsVideo(
     etaSeconds: null,
   });
 
+  const lyricFamily = project.typography.fontFamily;
+  const lyricWeight = project.typography.fontWeight;
+  const secondaryWeight = lyricWeight >= 600 ? 500 : lyricWeight;
+  const watermarkFamily = project.watermark?.fontFamily || 'Caveat';
+  await Promise.all([
+    document.fonts.load('700 48px "Caveat"'),
+    document.fonts.load(`700 48px "${watermarkFamily}"`),
+    document.fonts.load(`${lyricWeight} 48px "${lyricFamily}"`),
+    document.fonts.load(`italic ${secondaryWeight} 36px "${lyricFamily}"`),
+    document.fonts.load(`${secondaryWeight} 36px "${lyricFamily}"`),
+  ]).catch(() => {});
   await document.fonts.ready;
   const caps = await checkExportCapabilities();
 
